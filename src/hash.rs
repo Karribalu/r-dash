@@ -1,4 +1,4 @@
-pub type ValueT<'a> = &'a mut [u8];
+pub type ValueT = Vec<u8>;
 pub trait Hash<T> {
     fn new();
     fn insert(key: T, value: [u8]);

@@ -11,8 +11,10 @@ const OVERFLOW_SET: u8 = 1 << 4;
 const STASH_BUCKET: u8 = 2;
 const STASH_MASK: usize = (1 << STASH_BUCKET.ilog2()) - 1;
 const ALLOC_MASK: usize = 1 << 4 - 1;
-pub struct Bucket<'a, T> {
-    pub pairs: Vec<Pair<'a, T>>,
+#[derive(Debug, Clone)]
+
+pub struct Bucket<T> {
+    pub pairs: Vec<Option<Pair<T>>>,
     pub unused: [u8; 2],
     overflow_count: u8,
     overflow_member: u8,
@@ -33,17 +35,17 @@ In the above example 5 slots are filled
 
 */
 
-impl<'a, T: Debug> Bucket<'a, T> {
+impl<T: Debug + Clone> Bucket<T> {
     pub fn new() -> Self {
         Bucket {
-            pairs: Vec::with_capacity(K_NUM_PAIR_PER_BUCKET as usize),
+            pairs: vec![None; 18],
             unused: [0, 0],
             overflow_count: 0,
             overflow_member: 0,
             overflow_index: 0,
             overflow_bitmap: 0,
             finger_array: [0; 18],
-            bitmap: 15597573,
+            bitmap: 0,
             version_lock: 0,
         }
     }
@@ -175,19 +177,19 @@ impl<'a, T: Debug> Bucket<'a, T> {
         new_bitmap -= 1;
         self.bitmap = new_bitmap;
     }
-    pub fn insert(&mut self, key: T, value: ValueT<'a>, meta_hash: u8, probe: bool) -> i32 {
+    pub fn insert(&mut self, key: T, value: ValueT, meta_hash: u8, probe: bool) -> i32 {
         let slot = self.find_empty_slot();
         assert!(slot < K_NUM_PAIR_PER_BUCKET as i32);
         if slot == -1 {
             println!("Cannot find the empty slot, for key {:?}", key);
             return -1;
         }
-        self.pairs[slot as usize] = Pair::new(key, value);
+        self.pairs[slot as usize] = Some(Pair::new(key, value));
         self.set_hash(slot, meta_hash, probe);
         0
     }
-    pub fn insert_displace(&mut self, key: T, value: ValueT<'a>, meta_hash: u8, slot: i32, probe: bool){
-        self.pairs[slot as usize] = Pair::new(key, value);
+    pub fn insert_displace(&mut self, key: T, value: ValueT, meta_hash: u8, slot: i32, probe: bool){
+        self.pairs[slot as usize] = Some(Pair::new(key, value));
         self.set_hash(slot, meta_hash, probe);
     }
     pub fn delete_with_key_pointer(&mut self, key: *mut u8,meta_hash: u8, probe: bool) -> i32{

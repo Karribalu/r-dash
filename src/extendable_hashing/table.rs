@@ -3,9 +3,9 @@ use crate::extendable_hashing::{K_NUM_BUCKET, K_STASH_BUCKET};
 use std::sync::{Arc, Mutex};
 
 // Segment
-pub struct Table<'a, T> {
+pub struct Table<T> {
     dummy: [char; 48],
-    bucket: [Bucket<'a, T>; K_NUM_BUCKET + K_STASH_BUCKET],
+    bucket: [Bucket<T>; K_NUM_BUCKET + K_STASH_BUCKET],
     local_depth: usize,
     pattern: usize,
     number: i32,

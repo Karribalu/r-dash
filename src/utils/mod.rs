@@ -3,6 +3,7 @@
 // use std::simd::Simd;
 //
 pub mod pair;
+pub mod hashing;
 //
 // pub fn sse_cmp8(src: &[u8; 18], key: u8) -> i32 {
 //     // Load the key into all elements of a __m128i vector

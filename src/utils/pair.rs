@@ -1,5 +1,5 @@
 use crate::hash::ValueT;
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Key<T>{
     pub key: T,
     pub is_pointer: bool,
@@ -17,13 +17,23 @@ impl<T> Key<T> {
     }
 }
 #[derive(Debug)]
-pub struct Pair<'a, T> {
+pub struct Pair<T> {
     pub key: Key<T>,
-    pub value: ValueT<'a>,
+    pub value: ValueT,
+}
+impl<T: Clone> Clone for Pair<T> {
+    fn clone(&self) -> Self {
+        // Manually handle the data if necessary; for example, create a new buffer
+        let new_buffer= self.value.to_vec(); // or other logic
+        Pair{
+            key: self.key.clone(),
+            value:  new_buffer
+        }
+    }
 }
 
-impl<'a, T> Pair<'a ,T> {
-    pub fn new(key: T, value: ValueT<'a>) -> Self {
+impl<T> Pair<T> {
+    pub fn new(key: T, value: ValueT) -> Self {
         let key = Key::new(key);
         Pair { key, value}
     }
