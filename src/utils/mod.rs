@@ -18,3 +18,12 @@ pub mod hashing;
 //     // Convert the cmp_result to an integer mask
 //     cmp_result.to_bitmask() as i32
 // }
+
+
+pub fn var_compare(key_1: &Vec<u8>, len1: u32, key_2: &Vec<u8>, len2: u32) -> bool{
+    if len1 != len2{
+        return false;
+    }
+    let matching = key_1.iter().zip(key_2.iter()).filter(|&(a, b)| a == b).count();
+    matching == key_1.len() && matching == key_1.len()
+}

@@ -1,7 +1,8 @@
 use std::fmt::Debug;
 use crate::hash::ValueT;
-use crate::utils::pair::Pair;
+use crate::utils::pair::{Key, Pair};
 use std::ops::BitAnd;
+use crate::utils::var_compare;
 // use crate::utils::sse_cmp8;
 
 const K_NUM_PAIR_PER_BUCKET: u32 = 14;
@@ -13,7 +14,7 @@ const STASH_MASK: usize = (1 << STASH_BUCKET.ilog2()) - 1;
 const ALLOC_MASK: usize = 1 << 4 - 1;
 #[derive(Debug, Clone)]
 
-pub struct Bucket<T> {
+pub struct Bucket<T: PartialEq> {
     pub pairs: Vec<Option<Pair<T>>>,
     pub unused: [u8; 2],
     overflow_count: u8,
@@ -35,7 +36,7 @@ In the above example 5 slots are filled
 
 */
 
-impl<T: Debug + Clone> Bucket<T> {
+impl<T: Debug + Clone + PartialEq> Bucket<T> {
     pub fn new() -> Self {
         Bucket {
             pairs: vec![None; 18],
@@ -103,7 +104,7 @@ impl<T: Debug + Clone> Bucket<T> {
         }
     }
 
-    pub fn unset_indicator(&mut self, meta_hash: u8, neighbor: &mut Bucket<T>, key: T, pos: u64) {
+    pub fn unset_indicator(&mut self, meta_hash: u8, neighbor: &mut Bucket<T>, key: Key<T>, pos: u64) {
         // TODO: Verify it it is u64 or u8
         let mut clear_success = false;
         let mask1 = self.overflow_bitmap & OVERFLOW_BITMAP_MASK;
@@ -177,7 +178,7 @@ impl<T: Debug + Clone> Bucket<T> {
         new_bitmap -= 1;
         self.bitmap = new_bitmap;
     }
-    pub fn insert(&mut self, key: T, value: ValueT, meta_hash: u8, probe: bool) -> i32 {
+    pub fn insert(&mut self, key: Key<T>, value: ValueT, meta_hash: u8, probe: bool) -> i32 {
         let slot = self.find_empty_slot();
         assert!(slot < K_NUM_PAIR_PER_BUCKET as i32);
         if slot == -1 {
@@ -188,7 +189,77 @@ impl<T: Debug + Clone> Bucket<T> {
         self.set_hash(slot, meta_hash, probe);
         0
     }
-    pub fn insert_displace(&mut self, key: T, value: ValueT, meta_hash: u8, slot: i32, probe: bool){
+    pub fn check_and_get(&self, meta_hash: u8, key: Key<T>, probe: bool, value: &mut ValueT) -> bool {
+        let mut mask: u32 = 0;
+        // TODO: We can replace this loop with SIMD instruction
+        for(i, &finger) in self.finger_array.iter().enumerate() {
+            if finger == meta_hash{
+                // Setting the corresponding bit which matched with the hash;
+                mask |= 1 << i;
+            }
+        }
+        if probe {
+            // Meaning We are looking the key in the probing bucket
+            mask = (mask as u32 & get_bitmap(self.bitmap) & get_member(self.bitmap));
+        }else{
+            mask = (mask as u32 & get_bitmap(self.bitmap) & !get_member(self.bitmap));
+        }
+
+        if mask == 0{
+            // No match found
+            return false;
+        }
+        if key.is_pointer {
+            // Variable length key
+            for i in 0.. 14{
+                if check_bit_32(mask, i as u32){
+                    let ex_key = &self.pairs[i].clone().unwrap().key;
+                    if var_compare(&key.pointed_key, key.length, &ex_key.pointed_key, ex_key.length){
+                        *value = self.pairs[i].clone().unwrap().value;
+                        return true;
+                    }
+                }
+
+            }
+        }else{
+            // Fixed length keys
+            for i in (0..14).step_by(4){
+                let iu = i as usize;
+                if check_bit_32(mask, i) &&
+                    self.pairs[iu].clone().unwrap().key.key == key.key{
+                    *value = self.pairs[iu].clone().unwrap().value;
+                    return true;
+                }
+                if check_bit_32(mask, i + 1) &&
+                    self.pairs[iu + 1].clone().unwrap().key.key == key.key{
+                    *value = self.pairs[iu + 1].clone().unwrap().value;
+                    return true;
+                }
+                if check_bit_32(mask, i + 2) &&
+                    self.pairs[iu + 2].clone().unwrap().key.key == key.key{
+                    *value = self.pairs[iu + 2].clone().unwrap().value;
+                    return true;
+                }
+                if check_bit_32(mask, i + 3) &&
+                    self.pairs[iu + 3].clone().unwrap().key.key == key.key{
+                    *value = self.pairs[iu + 3].clone().unwrap().value;
+                    return true;
+                }
+            }
+            if check_bit_32(mask, 12) &&
+                self.pairs[12].clone().unwrap().key.key == key.key{
+                *value = self.pairs[12].clone().unwrap().value;
+                return true;
+            }
+            if check_bit_32(mask, 13) &&
+                self.pairs[13].clone().unwrap().key.key == key.key{
+                *value = self.pairs[13].clone().unwrap().value;
+                return true;
+            }
+        }
+        false
+    }
+    pub fn insert_displace(&mut self, key: Key<T>, value: ValueT, meta_hash: u8, slot: i32, probe: bool){
         self.pairs[slot as usize] = Some(Pair::new(key, value));
         self.set_hash(slot, meta_hash, probe);
     }
@@ -229,7 +300,6 @@ impl<T: Debug + Clone> Bucket<T> {
 it returns 5 as the count
 */
 fn get_count(var: u32) -> u32 {
-    println!("count {}", var & COUNT_MASK);
     var.bitand(COUNT_MASK)
 }
 
@@ -245,5 +315,9 @@ fn get_member(var: u32) -> u32{
 }
 
 fn check_bit(var: u8, pos: u32) -> bool {
+    var & (1 << pos) > 0
+}
+
+fn check_bit_32(var: u32, pos: u32) -> bool {
     var & (1 << pos) > 0
 }

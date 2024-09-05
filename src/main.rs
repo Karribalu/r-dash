@@ -1,7 +1,9 @@
+#![feature(let_chains)]
+
 use crate::extendable_hashing::bucket::Bucket;
 use crate::hash::ValueT;
 use crate::utils::hashing::calculate_hash;
-use crate::utils::pair::Pair;
+use crate::utils::pair::{Key, Pair};
 
 mod extendable_hashing;
 mod hash;
@@ -25,19 +27,27 @@ fn main() {
     let mut bucket: Bucket<String> = Bucket::new();
     let mut success = 0;
     let mut ans: Vec<String> = vec![];
-    for i in 10000..100020{
+    for i in 10000..10020{
         let key = String::from(format!("let hash = calculate_hash(&key) {}", i));
         let mut string = String::from(format!("let hash = calculate_hash(&key) {}", i));
         let value: ValueT = string.clone().into_bytes();
 
         let hash = calculate_hash(&key);
+        let key = Key::new(key);
         let response = bucket.insert(key, value, hash, true);
         if response == 0 {
             success += 1;
             ans.push(String::from(format!("let hash = calculate_hash(&key) {}", i)));
         }
-
     }
-    println!("Successfully insertions are {} {:?}", success, ans);
+    for key in ans{
+        let mut vector = vec![];
+        let hash = calculate_hash(&key);
+        let key = Key::new(key);
+        if bucket.check_and_get(hash, key, false, &mut vector){
+            println!("found the key {:?}", vector);
+        }
+    }
+    // println!("Successfully insertions are {} {:?}", success, ans);
 
 }
