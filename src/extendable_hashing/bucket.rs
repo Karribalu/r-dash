@@ -1,7 +1,9 @@
-use std::fmt::Debug;
+use std::error::Error;
+use std::fmt::{write, Debug, Display, Formatter};
 use crate::hash::ValueT;
 use crate::utils::pair::{Key, Pair};
 use std::ops::BitAnd;
+use thiserror::Error;
 use crate::utils::var_compare;
 // use crate::utils::sse_cmp8;
 
@@ -171,23 +173,23 @@ impl<T: Debug + Clone + PartialEq> Bucket<T> {
         new_bitmap += 1; // Increasing the count of occupied slots i.e. last 4 bits
         self.bitmap = new_bitmap;
     }
-    pub fn unset_hash(&mut self, index: i32) {
+    pub fn unset_hash(&mut self, index: u32) {
         let mut new_bitmap = self.bitmap & !(1 << (index + 18)) & (!(1 << (index + 4)));
         assert!(get_count(self.bitmap) <= K_NUM_PAIR_PER_BUCKET);
         assert!(get_count(self.bitmap) > 0);
         new_bitmap -= 1;
         self.bitmap = new_bitmap;
     }
-    pub fn insert(&mut self, key: Key<T>, value: ValueT, meta_hash: u8, probe: bool) -> i32 {
+    pub fn insert(&mut self, key: Key<T>, value: ValueT, meta_hash: u8, probe: bool) -> Result<i32, BucketError> {
         let slot = self.find_empty_slot();
         assert!(slot < K_NUM_PAIR_PER_BUCKET as i32);
         if slot == -1 {
             println!("Cannot find the empty slot, for key {:?}", key);
-            return -1;
+            return Err(BucketError::BucketFull);
         }
         self.pairs[slot as usize] = Some(Pair::new(key, value));
         self.set_hash(slot, meta_hash, probe);
-        0
+        Ok(slot)
     }
     pub fn check_and_get(&self, meta_hash: u8, key: Key<T>, probe: bool, value: &mut ValueT) -> bool {
         let mut mask: u32 = 0;
@@ -200,9 +202,9 @@ impl<T: Debug + Clone + PartialEq> Bucket<T> {
         }
         if probe {
             // Meaning We are looking the key in the probing bucket
-            mask = (mask as u32 & get_bitmap(self.bitmap) & get_member(self.bitmap));
+            mask = (mask & get_bitmap(self.bitmap) & get_member(self.bitmap));
         }else{
-            mask = (mask as u32 & get_bitmap(self.bitmap) & !get_member(self.bitmap));
+            mask = (mask & get_bitmap(self.bitmap) & !get_member(self.bitmap));
         }
 
         if mask == 0{
@@ -271,16 +273,106 @@ impl<T: Debug + Clone + PartialEq> Bucket<T> {
             10
         }
     }
-    pub fn delete(&mut self, key: T, meta_hash: u8, probe: bool) -> i32{
+    pub fn delete(&mut self, key: Key<T>, meta_hash: u8, probe: bool) -> Result<(), BucketError> {
         /*do the simd and check the key, then do the delete operation*/
         let mut mask: u32 = 0;
         // sse_cmp8(&self.finger_array, meta_hash);
-        if probe {
-            mask = mask & get_bitmap(self.bitmap) & !get_bitmap(self.bitmap);
-        }else {
-            mask = mask & get_bitmap(self.bitmap) & get_member(self.bitmap);
+        for(i, &finger) in self.finger_array.iter().enumerate() {
+            if finger == meta_hash{
+                // Setting the corresponding bit which matched with the hash;
+                mask |= 1 << i;
+            }
         }
-        -1
+        if probe {
+            mask = (mask & get_bitmap(self.bitmap) & get_member(self.bitmap));
+        }else{
+            mask = (mask & get_bitmap(self.bitmap) & !get_member(self.bitmap));
+        }
+        if key.is_pointer{
+            if mask != 0{
+                for i in (0..14).step_by(4){
+                    let iu = i as usize;
+                    if check_bit_32(mask, i) &&
+                        self.pairs[iu].clone().unwrap().key.pointed_key == key.pointed_key{
+                        self.unset_hash(i);
+                        self.pairs[iu] = None;
+                        return Ok(());
+                    }
+                    if check_bit_32(mask, i + 1) &&
+                        self.pairs[iu + 1].clone().unwrap().key.pointed_key == key.pointed_key{
+                        self.unset_hash(i);
+                        self.pairs[iu] = None;
+                        return Ok(());
+                    }
+                    if check_bit_32(mask, i + 2) &&
+                        self.pairs[iu + 2].clone().unwrap().key.pointed_key == key.pointed_key{
+                        self.unset_hash(i);
+                        self.pairs[iu] = None;
+                        return Ok(());
+                    }
+                    if check_bit_32(mask, i + 3) &&
+                        self.pairs[iu + 3].clone().unwrap().key.pointed_key == key.pointed_key{
+                        self.unset_hash(i);
+                        self.pairs[iu] = None;
+                        return Ok(());
+                    }
+                }
+                if check_bit_32(mask, 12) &&
+                    self.pairs[12].clone().unwrap().key.pointed_key == key.pointed_key{
+                    self.unset_hash(12);
+                    self.pairs[12] = None;
+                    return Ok(());
+                }
+                if check_bit_32(mask, 13) &&
+                    self.pairs[13].clone().unwrap().key.pointed_key == key.pointed_key{
+                    self.unset_hash(13);
+                    self.pairs[13] = None;
+                    return Ok(());
+                }
+            }
+        }
+        else{
+            for i in (0..12).step_by(4){
+                let iu = i as usize;
+                if check_bit_32(mask, i) &&
+                    self.pairs[iu].clone().unwrap().key.key == key.key{
+                    self.unset_hash(i);
+                    self.pairs[iu] = None;
+                    return Ok(());
+                }
+                if check_bit_32(mask, i + 1) &&
+                    self.pairs[iu + 1].clone().unwrap().key.key == key.key{
+                    self.unset_hash(i + 1);
+                    self.pairs[iu + 1] = None;
+                    return Ok(());
+                }
+                if check_bit_32(mask, i + 2) &&
+                    self.pairs[iu + 2].clone().unwrap().key.key == key.key{
+                    self.unset_hash(i + 1);
+                    self.pairs[iu + 1] = None;
+                    return Ok(());
+                }
+                if check_bit_32(mask, i + 3) &&
+                    self.pairs[iu + 3].clone().unwrap().key.key == key.key{
+                    self.unset_hash(i + 1);
+                    self.pairs[iu + 1] = None;
+                    return Ok(());
+                }
+            }
+            if check_bit_32(mask, 12) &&
+                self.pairs[12].clone().unwrap().key.key == key.key{
+                self.unset_hash(12);
+                self.pairs[12] = None;
+                return Ok(());
+            }
+            if check_bit_32(mask, 13) &&
+                self.pairs[13].clone().unwrap().key.key == key.key{
+                self.unset_hash(13);
+                self.pairs[13] = None;
+                return Ok(());
+            }
+        }
+        Err(BucketError::ItemDoesntExist)
     }
     pub fn reset_lock(&mut self){
         self.version_lock = 0;
@@ -295,6 +387,31 @@ impl<T: Debug + Clone + PartialEq> Bucket<T> {
     }
 
 }
+#[derive(Debug, Error)]
+pub enum BucketError{
+    #[error("The bucket is full")]
+    BucketFull,
+    #[error("Internal Error")]
+    Internal,
+    #[error("Item does not exist")]
+    ItemDoesntExist,
+}
+
+// impl Display for BucketError {
+//     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+//         match self {
+//             BucketError::BucketFull => write!(
+//                 f,
+//                 "The bucket is full",
+//             ),
+//             BucketError::Internal => write!(
+//                 f,
+//                 "Internal Error"
+//             )
+//         }
+//     }
+// }
+
 /**
 0000 0000 1110 0010 0000 0000 0000 0101 & 0000 0000 0000 0000 0000 0000 0000 1111
 it returns 5 as the count
