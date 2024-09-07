@@ -60,13 +60,18 @@ impl<T: Debug + Clone + PartialEq> Bucket<T> {
         let mut new_value: u32;
         loop {
             loop {
+                // We check if the lock is acquired or not, If not we store the local old_value in un locked state
                 old_value = self.version_lock.load(atomic::Ordering::Acquire);
                 if old_value & LOCK_SET == 0 {
                     old_value &= LOCK_MASK;
                     break;
                 }
             }
+            // We lock the new_value to set the lock in the next step
             new_value = old_value | LOCK_SET;
+
+            // We check if the version lock is the old_value, If not there is another thread which acquired the lock,
+            // If the lock value is same as old_value, We can change the lock to new_value which is the locked state.
             if self
                 .version_lock
                 .compare_exchange(
