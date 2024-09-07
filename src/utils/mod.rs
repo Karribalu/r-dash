@@ -2,8 +2,8 @@
 // use std::simd::cmp::SimdPartialEq;
 // use std::simd::Simd;
 //
-pub mod pair;
 pub mod hashing;
+pub mod pair;
 //
 // pub fn sse_cmp8(src: &[u8; 18], key: u8) -> i32 {
 //     // Load the key into all elements of a __m128i vector
@@ -19,11 +19,14 @@ pub mod hashing;
 //     cmp_result.to_bitmask() as i32
 // }
 
-
-pub fn var_compare(key_1: &Vec<u8>, len1: u32, key_2: &Vec<u8>, len2: u32) -> bool{
-    if len1 != len2{
+pub fn var_compare(key_1: &Vec<u8>, len1: u32, key_2: &Vec<u8>, len2: u32) -> bool {
+    if len1 != len2 {
         return false;
     }
-    let matching = key_1.iter().zip(key_2.iter()).filter(|&(a, b)| a == b).count();
+    let matching = key_1
+        .iter()
+        .zip(key_2.iter())
+        .filter(|&(a, b)| a == b)
+        .count();
     matching == key_1.len() && matching == key_1.len()
 }

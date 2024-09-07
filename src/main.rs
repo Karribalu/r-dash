@@ -1,10 +1,10 @@
 #![feature(let_chains)]
 
-use std::time::Instant;
 use crate::extendable_hashing::bucket::{Bucket, BucketError};
 use crate::hash::ValueT;
 use crate::utils::hashing::calculate_hash;
 use crate::utils::pair::{Key, Pair};
+use std::time::Instant;
 
 mod extendable_hashing;
 mod hash;
@@ -25,15 +25,14 @@ fn main() {
     // let pair: Pair<f32> = Pair::new(77.0, value);
     // println!("Pair is {:?}", pair);
 
-
     // println!("Successfully insertions are {} {:?}", success, ans);
     fixed_keys();
 }
-fn variable_keys(){
+fn variable_keys() {
     let mut bucket: Bucket<String> = Bucket::new();
     let mut success = 0;
     let mut ans: Vec<String> = vec![];
-    for i in 10000..10020{
+    for i in 10000..10020 {
         let key = String::from(format!("let hash = calculate_hash(&key) {}", i));
         let mut string = String::from(format!("let hash = calculate_hash(&key) {}", i));
         let value: ValueT = string.clone().into_bytes();
@@ -41,20 +40,21 @@ fn variable_keys(){
         let hash = calculate_hash(&key);
         let key = Key::new(key);
         let response = bucket.insert(key, value, hash, true);
-        match response{
+        match response {
             Ok(slot) => {
                 let key = String::from(format!("let hash = calculate_hash(&key) {}", i));
                 println!("The key {} is inserted at {}", key, slot);
                 success += 1;
                 ans.push(key);
             }
-            Err(_) => {
-
-            }
+            Err(_) => {}
         }
     }
-    ans.push(String::from(format!("let hash = calculate_hash(&key) {}", 500)));
-    for key_str in ans{
+    ans.push(String::from(format!(
+        "let hash = calculate_hash(&key) {}",
+        500
+    )));
+    for key_str in ans {
         let mut vector = vec![];
         let cloned_key = key_str.clone();
         let hash = calculate_hash(&key_str);
@@ -62,20 +62,20 @@ fn variable_keys(){
         let start = Instant::now();
         // Calculate the elapsed time
 
-        if bucket.check_and_get(hash, key, false, &mut vector){
+        if bucket.check_and_get(hash, key, false, &mut vector) {
             println!("found the key {:?}", vector);
-        }else{
+        } else {
             println!("Didn't found the key {}", cloned_key);
         }
         let duration = start.elapsed();
         println!("it took so time {:?}", duration);
     }
 }
-fn fixed_keys(){
+fn fixed_keys() {
     let mut bucket: Bucket<i32> = Bucket::new();
     let mut success = 0;
     let mut ans = vec![];
-    for i in 10000..10020{
+    for i in 10000..10020 {
         let mut string = String::from(format!("let hash = calculate_hash(&key) {}", i));
         let value: ValueT = string.clone().into_bytes();
 
@@ -93,7 +93,7 @@ fn fixed_keys(){
         }
     }
     ans.push(500);
-    for key_str in &ans{
+    for key_str in &ans {
         let mut vector = vec![];
         let cloned_key = key_str.clone();
         let hash = calculate_hash(key_str);
@@ -101,9 +101,9 @@ fn fixed_keys(){
         let start = Instant::now();
         // Calculate the elapsed time
 
-        if bucket.check_and_get(hash, key, false, &mut vector){
+        if bucket.check_and_get(hash, key, false, &mut vector) {
             println!("found the key {:?}", vector);
-        }else{
+        } else {
             println!("Didn't found the key {}", cloned_key);
         }
         let duration = start.elapsed();
@@ -117,13 +117,13 @@ fn fixed_keys(){
         Ok(_) => {
             println!("found the key to delete {:?}", ans);
             let mut vector = vec![];
-            let key =  Key::new(ans[5]);
+            let key = Key::new(ans[5]);
             let start = Instant::now();
             // Calculate the elapsed time
 
-            if bucket.check_and_get(hash, key, false, &mut vector){
+            if bucket.check_and_get(hash, key, false, &mut vector) {
                 println!("found the key {:?}", vector);
-            }else{
+            } else {
                 println!("Didn't found the key {}", ans[5]);
             }
             let duration = start.elapsed();
