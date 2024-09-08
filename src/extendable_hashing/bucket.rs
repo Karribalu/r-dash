@@ -2,12 +2,12 @@ use crate::hash::ValueT;
 use crate::utils::pair::{Key, Pair};
 use crate::utils::var_compare;
 use std::error::Error;
-use std::fmt::{write, Debug, Display, Formatter};
+use std::fmt::{Debug, Display};
 use std::ops::BitAnd;
 use std::sync::atomic::AtomicU32;
+use std::sync::atomic::Ordering::SeqCst;
 use std::sync::{atomic, Arc};
 use thiserror::Error;
-// use crate::utils::sse_cmp8;
 
 const K_NUM_PAIR_PER_BUCKET: u32 = 14;
 const COUNT_MASK: u32 = (1 << 4) - 1;
@@ -16,8 +16,8 @@ const OVERFLOW_SET: u8 = 1 << 4;
 const STASH_BUCKET: u8 = 2;
 const STASH_MASK: usize = (1 << STASH_BUCKET.ilog2()) - 1;
 const ALLOC_MASK: usize = 1 << 4 - 1;
-const LOCK_SET: u32 = 1;
-const LOCK_MASK: u32 = !LOCK_SET;
+const LOCK_SET: u32 = 1 << 31;
+const LOCK_MASK: u32 = 1 << 31 - 1;
 #[derive(Debug)]
 pub struct Bucket<T: PartialEq> {
     pub pairs: Vec<Option<Pair<T>>>,
@@ -55,7 +55,7 @@ impl<T: Debug + Clone + PartialEq> Bucket<T> {
             version_lock: Arc::new(AtomicU32::new(0)),
         }
     }
-    pub fn get_lock(&mut self) {
+    pub fn get_lock(&self) {
         let mut old_value: u32;
         let mut new_value: u32;
         loop {
@@ -442,8 +442,8 @@ impl<T: Debug + Clone + PartialEq> Bucket<T> {
         }
         Err(BucketError::ItemDoesntExist)
     }
-    pub fn reset_lock(&mut self) {
-        self.version_lock = Arc::new(AtomicU32::new(0));
+    pub fn reset_lock(&self) {
+        self.version_lock.store(0, SeqCst);
     }
 
     pub fn reset_overflow_fp(&mut self) {
@@ -504,4 +504,40 @@ fn check_bit(var: u8, pos: u32) -> bool {
 
 fn check_bit_32(var: u32, pos: u32) -> bool {
     var & (1 << pos) > 0
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::ops::AddAssign;
+    use std::thread;
+    use std::time::{Duration, Instant};
+    #[test]
+    fn test_locking_with_multiple_thread() {
+        let bucket: Arc<Bucket<i32>> = Arc::new(Bucket::new());
+        let mut handles = vec![];
+        let num_of_threads = 10000;
+        for i in 0..num_of_threads {
+            let mut cloned = Arc::clone(&bucket);
+            let handle = thread::spawn(move || {
+                let start = Instant::now();
+                cloned.get_lock();
+                let elapsed = start.elapsed();
+                // println!("Thread {} got lock {:?}", i,elapsed);
+                cloned.reset_lock();
+                elapsed
+            });
+            handles.push(handle);
+        }
+        let mut duration = Duration::new(0, 0);
+        for handle in handles {
+            let dur = handle.join().unwrap();
+            duration.add_assign(dur);
+        }
+        println!(
+            " average {} nanos {} micro seconds",
+            duration.as_nanos() as f64 / num_of_threads as f64,
+            duration.as_micros()
+        );
+    }
 }

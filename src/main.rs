@@ -1,4 +1,5 @@
 #![feature(let_chains)]
+#![feature(integer_atomics)]
 
 use crate::extendable_hashing::bucket::{Bucket, BucketError};
 use crate::hash::ValueT;
