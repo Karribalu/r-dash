@@ -516,7 +516,8 @@ mod tests {
     fn test_locking_with_multiple_thread() {
         let bucket: Arc<Bucket<i32>> = Arc::new(Bucket::new());
         let mut handles = vec![];
-        let num_of_threads = 10000;
+        let num_of_threads = 100000;
+        let total_dur = Instant::now();
         for i in 0..num_of_threads {
             let mut cloned = Arc::clone(&bucket);
             let handle = thread::spawn(move || {
@@ -529,15 +530,19 @@ mod tests {
             });
             handles.push(handle);
         }
+        println!("Thread creation took{:?}", total_dur.elapsed());
         let mut duration = Duration::new(0, 0);
+        let total_dur = Instant::now();
         for handle in handles {
             let dur = handle.join().unwrap();
             duration.add_assign(dur);
         }
+        println!("Thread execution took {:?}", total_dur.elapsed());
         println!(
-            " average {} nanos {} micro seconds",
+            " average {} nanos {} micro seconds {} seconds",
             duration.as_nanos() as f64 / num_of_threads as f64,
-            duration.as_micros()
+            duration.as_micros(),
+            duration.as_secs()
         );
     }
 }
