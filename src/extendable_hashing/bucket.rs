@@ -55,6 +55,10 @@ impl<T: Debug + Clone + PartialEq> Bucket<T> {
             version_lock: Arc::new(AtomicU32::new(0)),
         }
     }
+    /**
+        It will wait till the executor is able to get the lock.
+        Ensure there are no threads which are acquired but not released.
+    */
     pub fn get_lock(&self) {
         let mut old_value: u32;
         let mut new_value: u32;
@@ -328,18 +332,10 @@ impl<T: Debug + Clone + PartialEq> Bucket<T> {
         self.pairs[slot as usize] = Some(Pair::new(key, value));
         self.set_hash(slot, meta_hash, probe);
     }
-    pub fn delete_with_key_pointer(&mut self, key: *mut u8, meta_hash: u8, probe: bool) -> i32 {
-        unsafe {
-            println!("Pointer is called {:?}", key);
-            // self.delete(*key,meta_hash, probe)
-            // *key = "hello ball".parse().unwrap();
-            10
-        }
-    }
     pub fn delete(&mut self, key: Key<T>, meta_hash: u8, probe: bool) -> Result<(), BucketError> {
         /*do the simd and check the key, then do the delete operation*/
         let mut mask: u32 = 0;
-        // sse_cmp8(&self.finger_array, meta_hash);
+        // TODO: Can be replaced by a simd operation
         for (i, &finger) in self.finger_array.iter().enumerate() {
             if finger == meta_hash {
                 // Setting the corresponding bit which matched with the hash;
@@ -509,9 +505,11 @@ fn check_bit_32(var: u32, pos: u32) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::utils::hashing::calculate_hash;
     use std::ops::AddAssign;
     use std::thread;
     use std::time::{Duration, Instant};
+
     #[test]
     fn test_locking_with_multiple_thread() {
         let bucket: Arc<Bucket<i32>> = Arc::new(Bucket::new());
@@ -544,5 +542,121 @@ mod tests {
             duration.as_micros(),
             duration.as_secs()
         );
+    }
+    #[test]
+    fn test_bucket_insertion_with_fixed_keys() {
+        let mut bucket: Bucket<i32> = Bucket::new();
+        let mut success = 0;
+        let mut ans = vec![];
+        for i in 10000..10020 {
+            let mut string = String::from(format!("let hash = calculate_hash(&key) {}", i));
+            let value: ValueT = string.clone().into_bytes();
+
+            let hash = calculate_hash(&i);
+            let key = Key::new(i);
+            let response = bucket.insert(key, value, hash, true);
+            match response {
+                Ok(_) => {
+                    success += 1;
+                    ans.push(i);
+                }
+                Err(err) => {
+                    println!("{:?}", err);
+                }
+            }
+        }
+        ans.push(500);
+        for key_str in &ans {
+            let mut vector = vec![];
+            let cloned_key = key_str.clone();
+            let hash = calculate_hash(key_str);
+            let key = Key::new(*key_str);
+            let start = Instant::now();
+            // Calculate the elapsed time
+            if bucket.check_and_get(hash, key, false, &mut vector) {
+                println!("found the key {:?}", vector);
+            } else {
+                println!("Didn't found the key {}", cloned_key);
+            }
+            let duration = start.elapsed();
+            println!("it took so time {:?}", duration);
+        }
+        let hash = calculate_hash(&ans[5]);
+        let key: Key<i32> = Key::new(ans[5]);
+        let delete = bucket.delete(key, hash, false);
+        match delete {
+            Ok(_) => {
+                println!("found the key to delete {:?}", ans);
+                let mut vector = vec![];
+                let key = Key::new(ans[5]);
+                let start = Instant::now();
+                // Calculate the elapsed time
+
+                if bucket.check_and_get(hash, key, false, &mut vector) {
+                    println!("found the key {:?}", vector);
+                } else {
+                    println!("Didn't found the key {}", ans[5]);
+                }
+                let duration = start.elapsed();
+                println!("it took so time {:?}", duration);
+            }
+            Err(err) => {
+                println!("{:?}", err);
+            }
+        }
+        let key: Key<i32> = Key::new(ans[5]);
+        let delete = bucket.delete(key, hash, false);
+        match delete {
+            Ok(_) => {
+                println!("found the key to delete {:?}", ans);
+            }
+            Err(err) => {
+                println!("{:?}", err.to_string());
+            }
+        }
+    }
+    #[test]
+    fn test_bucket_insertion_with_variable_keys() {
+        let mut bucket: Bucket<String> = Bucket::new();
+        let mut success = 0;
+        let mut ans: Vec<String> = vec![];
+        for i in 10000..10020 {
+            let key = String::from(format!("let hash = calculate_hash(&key) {}", i));
+            let mut string = String::from(format!("let hash = calculate_hash(&key) {}", i));
+            let value: ValueT = string.clone().into_bytes();
+
+            let hash = calculate_hash(&key);
+            let key = Key::new(key);
+            let response = bucket.insert(key, value, hash, true);
+            match response {
+                Ok(slot) => {
+                    let key = String::from(format!("let hash = calculate_hash(&key) {}", i));
+                    println!("The key {} is inserted at {}", key, slot);
+                    success += 1;
+                    ans.push(key);
+                }
+                Err(_) => {}
+            }
+        }
+        ans.push(String::from(format!(
+            "let hash = calculate_hash(&key) {}",
+            500
+        )));
+        for key_str in ans {
+            let mut vector = vec![];
+            let cloned_key = key_str.clone();
+            let hash = calculate_hash(&key_str);
+            let key = Key::new(key_str);
+            let start = Instant::now();
+            // Calculate the elapsed time
+
+            if bucket.check_and_get(hash, key, false, &mut vector) {
+                println!("found the key {:?}", vector);
+            } else {
+                println!("Didn't found the key {}", cloned_key);
+            }
+            let duration = start.elapsed();
+            println!("it took so time {:?}", duration);
+        }
     }
 }
