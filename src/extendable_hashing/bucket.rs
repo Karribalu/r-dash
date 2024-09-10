@@ -2,7 +2,7 @@ use crate::hash::ValueT;
 use crate::utils::pair::{Key, Pair};
 use crate::utils::var_compare;
 use std::error::Error;
-use std::fmt::{Debug, Display};
+use std::fmt::Debug;
 use std::ops::BitAnd;
 use std::sync::atomic::AtomicU32;
 use std::sync::atomic::Ordering::SeqCst;
@@ -18,7 +18,7 @@ const STASH_MASK: usize = (1 << STASH_BUCKET.ilog2()) - 1;
 const ALLOC_MASK: usize = 1 << 4 - 1;
 const LOCK_SET: u32 = 1 << 31;
 const LOCK_MASK: u32 = 1 << 31 - 1;
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Bucket<T: PartialEq> {
     pub pairs: Vec<Option<Pair<T>>>,
     pub unused: [u8; 2],
@@ -98,7 +98,9 @@ impl<T: Debug + Clone + PartialEq> Bucket<T> {
         println!("{}", mask.trailing_zeros());
         mask.trailing_zeros() as i32
     }
-
+    pub fn is_lock(&self) -> bool {
+        self.version_lock.load(atomic::Ordering::Relaxed) != 0
+    }
     pub fn test_overflow(&self) -> bool {
         self.overflow_count > 0
     }
@@ -258,9 +260,9 @@ impl<T: Debug + Clone + PartialEq> Bucket<T> {
         }
         if probe {
             // Meaning We are looking the key in the probing bucket
-            mask = (mask & get_bitmap(self.bitmap) & get_member(self.bitmap));
+            mask = mask & get_bitmap(self.bitmap) & get_member(self.bitmap);
         } else {
-            mask = (mask & get_bitmap(self.bitmap) & !get_member(self.bitmap));
+            mask = mask & get_bitmap(self.bitmap) & !get_member(self.bitmap);
         }
 
         if mask == 0 {
@@ -343,9 +345,9 @@ impl<T: Debug + Clone + PartialEq> Bucket<T> {
             }
         }
         if probe {
-            mask = (mask & get_bitmap(self.bitmap) & get_member(self.bitmap));
+            mask = mask & get_bitmap(self.bitmap) & get_member(self.bitmap);
         } else {
-            mask = (mask & get_bitmap(self.bitmap) & !get_member(self.bitmap));
+            mask = mask & get_bitmap(self.bitmap) & !get_member(self.bitmap);
         }
         if key.is_pointer {
             if mask != 0 {
