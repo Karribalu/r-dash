@@ -90,6 +90,25 @@ impl<T: Debug + Clone + PartialEq> Bucket<T> {
             }
         }
     }
+    /**
+        Doesn't block the thread till it acquire the lock, Tries to get the lock in the first attempt and returns true if it succeeds else false
+    */
+    pub fn try_get_lock(&self) -> bool {
+        let v = self.version_lock.load(atomic::Ordering::Relaxed);
+        if v & LOCK_SET != 0 {
+            return false;
+        }
+        let old_value = v & LOCK_MASK;
+        let new_value = v | LOCK_SET;
+        self.version_lock
+            .compare_exchange(
+                old_value,
+                new_value,
+                atomic::Ordering::Acquire,
+                atomic::Ordering::Acquire,
+            )
+            .is_ok()
+    }
     pub fn find_empty_slot(&self) -> i32 {
         if get_count(self.bitmap) == K_NUM_PAIR_PER_BUCKET {
             return -1;
@@ -461,21 +480,6 @@ pub enum BucketError {
     #[error("Item does not exist")]
     ItemDoesntExist,
 }
-
-// impl Display for BucketError {
-//     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-//         match self {
-//             BucketError::BucketFull => write!(
-//                 f,
-//                 "The bucket is full",
-//             ),
-//             BucketError::Internal => write!(
-//                 f,
-//                 "Internal Error"
-//             )
-//         }
-//     }
-// }
 
 /**
 0000 0000 1110 0010 0000 0000 0000 0101 & 0000 0000 0000 0000 0000 0000 0000 1111

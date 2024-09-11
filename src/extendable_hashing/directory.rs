@@ -1,4 +1,4 @@
-pub struct Directory {
+pub struct Directory<T> {
     // x: Box::new: (vec![Table<T>]), // Yet to be created
     global_depth: usize,
     version: usize,
