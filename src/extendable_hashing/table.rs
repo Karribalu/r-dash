@@ -74,6 +74,9 @@ impl<T: PartialEq + Debug + Clone> Table<T> {
             return Err(TableError::UnableToAcquireLock("Unable to acquire neighbor lock".to_string()));
         }
         let dir = directory;
+        // Trying to get the MSBs of the key to determine the segment index
+        let segment_index = key_hash >> (8 * size_of::<usize>() - dir.global_depth);
+        // if dir.
         Ok(10)
     }
 }

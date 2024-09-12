@@ -1,17 +1,19 @@
+use crate::extendable_hashing::table::Table;
+
 pub struct Directory<T> {
-    // x: Box::new: (vec![Table<T>]), // Yet to be created
-    global_depth: usize,
-    version: usize,
-    depth_count: usize,
+    x: Vec<Table<T>>, // Yet to be created
+    pub global_depth: usize,
+    pub version: usize,
+    pub depth_count: usize,
 }
-//
-// impl<T> Directory<T>{
-//     fn new(&mut self, capacity: usize, version: usize) -> Self {
-//         Directory{
-//             // table: ,
-//             global_depth: capacity.ilog2() as usize,
-//             version,
-//             depth_count: 0,
-//         }
-//     }
-// }
+
+impl<T> Directory<T>{
+    fn new(&mut self, capacity: usize, version: usize) -> Self {
+        Directory{
+            x: vec![],
+            global_depth: capacity.ilog2() as usize,
+            version,
+            depth_count: 0,
+        }
+    }
+}
