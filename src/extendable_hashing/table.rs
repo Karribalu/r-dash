@@ -1,10 +1,10 @@
-use std::cmp::min;
 use crate::extendable_hashing::bucket::Bucket;
 use crate::extendable_hashing::directory::Directory;
 use crate::extendable_hashing::{BUCKET_MASK, K_FINGER_BITS, K_NUM_BUCKET, K_STASH_BUCKET};
 use crate::utils::pair::Key;
+use std::cmp::min;
 use std::fmt::Debug;
-use std::ops::BitXor;
+use std::ops::{BitXor, Shr};
 use std::sync::{Arc, Mutex};
 use thiserror::Error;
 
@@ -24,7 +24,7 @@ pub enum TableError {
     #[error("Item does not exist")]
     ItemDoesntExist,
     #[error(transparent)]
-    UnableToAcquireLock(String)
+    UnableToAcquireLock(String),
 }
 // Segment
 #[derive(Debug)]
@@ -64,19 +64,33 @@ impl<T: PartialEq + Debug + Clone> Table<T> {
             self.bucket[i].reset_lock();
         }
     }
-    pub fn insert(&mut self, key: Key<T>, value: T, key_hash: usize, meta_hash: u8, directory: &Directory<T>) -> Result<i32, TableError>{
+    pub fn insert(
+        &mut self,
+        key: Key<T>,
+        value: T,
+        key_hash: usize,
+        meta_hash: u8,
+        directory: &Directory<T>,
+    ) -> Result<i32, TableError> {
         let bucket_index = bucket_index(key_hash, K_FINGER_BITS, BUCKET_MASK);
         let target = &self.bucket[bucket_index];
         let neighbor = &self.bucket[(bucket_index + 1) & BUCKET_MASK];
         target.get_lock();
         if !neighbor.try_get_lock() {
             target.reset_lock();
-            return Err(TableError::UnableToAcquireLock("Unable to acquire neighbor lock".to_string()));
+            return Err(TableError::UnableToAcquireLock(
+                "Unable to acquire neighbor lock".to_string(),
+            ));
         }
         let dir = directory;
         // Trying to get the MSBs of the key to determine the segment index
         let segment_index = key_hash >> (8 * size_of::<usize>() - dir.global_depth);
-        // if dir.
+        if &dir.x[segment_index] != &self {
+            target.reset_lock();
+            neighbor.reset_lock();
+            return Err(TableError::Internal);
+        }
+
         Ok(10)
     }
 }

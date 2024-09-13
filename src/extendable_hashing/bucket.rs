@@ -1,3 +1,4 @@
+use crate::extendable_hashing::K_STASH_BUCKET;
 use crate::hash::ValueT;
 use crate::utils::pair::{Key, Pair};
 use crate::utils::var_compare;
@@ -90,6 +91,10 @@ impl<T: Debug + Clone + PartialEq> Bucket<T> {
             }
         }
     }
+    pub fn release_lock(&self) {
+        let version_lock = self.version_lock.load(atomic::Ordering::Acquire);
+        self.version_lock.store(version_lock + 1 - LOCK_SET, SeqCst);
+    }
     /**
         Doesn't block the thread till it acquire the lock, Tries to get the lock in the first attempt and returns true if it succeeds else false
     */
@@ -120,11 +125,13 @@ impl<T: Debug + Clone + PartialEq> Bucket<T> {
     pub fn is_lock(&self) -> bool {
         self.version_lock.load(atomic::Ordering::Relaxed) != 0
     }
+
+    /*true indicates overflow, needs extra check in the stash*/
     pub fn test_overflow(&self) -> bool {
         self.overflow_count > 0
     }
 
-    pub fn test_stack_check(&self) -> bool {
+    pub fn test_stash_check(&self) -> bool {
         self.overflow_bitmap & OVERFLOW_SET > 0
     }
 
@@ -265,7 +272,7 @@ impl<T: Debug + Clone + PartialEq> Bucket<T> {
     pub fn check_and_get(
         &self,
         meta_hash: u8,
-        key: Key<T>,
+        key: &Key<T>,
         probe: bool,
         value: &mut ValueT,
     ) -> bool {
@@ -278,7 +285,7 @@ impl<T: Debug + Clone + PartialEq> Bucket<T> {
             }
         }
         if probe {
-            // Meaning We are looking the key in the probing bucket
+            // Meaning We are looking the key in the probing (neighbor) bucket
             mask = mask & get_bitmap(self.bitmap) & get_member(self.bitmap);
         } else {
             mask = mask & get_bitmap(self.bitmap) & !get_member(self.bitmap);
@@ -459,6 +466,62 @@ impl<T: Debug + Clone + PartialEq> Bucket<T> {
         }
         Err(BucketError::ItemDoesntExist)
     }
+    pub fn unique_check(
+        &self,
+        meta_hash: u8,
+        key: &Key<T>,
+        neighbor: &Bucket<T>,
+        stash: &Bucket<T>,
+    ) -> bool {
+        let mut value: ValueT = vec![];
+        // We are only looking for the neighboring buckets
+        if self.check_and_get(meta_hash, &key, false, &mut value)
+            || neighbor.check_and_get(meta_hash, &key, true, &mut value)
+        {
+            return false;
+        }
+        if self.test_stash_check() {
+            let mut test_stash = false;
+            if self.test_overflow() {
+                // Overflow is there we have to check in stash buckets
+                test_stash = true;
+            } else {
+                // Check in the overflow buckets and decide if we have to check in the stash buckets
+                let mask = self.overflow_bitmap & OVERFLOW_BITMAP_MASK;
+                if mask != 0 {
+                    for i in 0..4 {
+                        if check_bit(mask, i)
+                            && &self.finger_array[14 + i] == meta_hash
+                            && ((1 << i) & self.overflow_member) == 0
+                        {
+                            test_stash = true;
+                            break;
+                        }
+                    }
+                }
+                if !test_stash {
+                    let mask = neighbor.overflow_bitmap & OVERFLOW_BITMAP_MASK;
+                    if mask != 0 {
+                        for i in 0..4 {
+                            if check_bit(mask, i)
+                                && &neighbor.finger_array[14 + i] == meta_hash
+                                && ((1 << i) & neighbor.overflow_member) == 0
+                            {
+                                test_stash = true;
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+            if test_stash {
+                for i in 0..K_STASH_BUCKET {
+                    let bucket = None;
+                }
+            }
+        }
+        true
+    }
     pub fn reset_lock(&self) {
         self.version_lock.store(0, SeqCst);
     }
@@ -579,7 +642,7 @@ mod tests {
             let key = Key::new(*key_str);
             let start = Instant::now();
             // Calculate the elapsed time
-            if bucket.check_and_get(hash, key, false, &mut vector) {
+            if bucket.check_and_get(hash, &key, false, &mut vector) {
                 println!("found the key {:?}", vector);
             } else {
                 println!("Didn't found the key {}", cloned_key);
@@ -598,7 +661,7 @@ mod tests {
                 let start = Instant::now();
                 // Calculate the elapsed time
 
-                if bucket.check_and_get(hash, key, false, &mut vector) {
+                if bucket.check_and_get(hash, &key, false, &mut vector) {
                     println!("found the key {:?}", vector);
                 } else {
                     println!("Didn't found the key {}", ans[5]);
@@ -656,7 +719,7 @@ mod tests {
             let start = Instant::now();
             // Calculate the elapsed time
 
-            if bucket.check_and_get(hash, key, false, &mut vector) {
+            if bucket.check_and_get(hash, &key, false, &mut vector) {
                 println!("found the key {:?}", vector);
             } else {
                 println!("Didn't found the key {}", cloned_key);
