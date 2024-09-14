@@ -76,10 +76,10 @@ impl<T: PartialEq + Debug + Clone> Table<T> {
         directory: &Directory<T>,
     ) -> Result<i32, TableError> {
         let bucket_index = bucket_index(key_hash, K_FINGER_BITS, BUCKET_MASK);
-        let target = &mut self.bucket[bucket_index];
+        let target = &mut self.bucket[bucket_index].clone();
         // (bucket_index + 1) & BUCKET_MASK used for wrapping up to 0 when the bucket_index is 63
         // (63 + 1) & 63 = 64 & 63 = 0
-        let neighbor = &mut self.bucket[(bucket_index + 1) & BUCKET_MASK];
+        let neighbor = &mut self.bucket[(bucket_index + 1) & BUCKET_MASK].clone();
         target.get_lock();
         if !neighbor.try_get_lock() {
             target.release_lock();
