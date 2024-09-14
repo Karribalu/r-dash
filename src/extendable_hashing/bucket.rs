@@ -23,13 +23,13 @@ const LOCK_MASK: u32 = 1 << 31 - 1;
 pub struct Bucket<T: PartialEq> {
     pub pairs: Vec<Option<Pair<T>>>,
     pub unused: [u8; 2],
-    overflow_count: u8,
-    overflow_member: u8,
-    overflow_index: u8,
-    overflow_bitmap: u8,
-    finger_array: [u8; 18], /*only use the first 14 bytes, can be accelerated by SSE instruction,0-13 for finger, 14-17 for overflowed*/
-    bitmap: u32,            // allocation bitmap + pointer bitmap + counter
-    version_lock: Arc<AtomicU32>,
+    pub overflow_count: u8,
+    pub overflow_member: u8,
+    pub overflow_index: u8,
+    pub overflow_bitmap: u8,
+    pub finger_array: [u8; 18], /*only use the first 14 bytes, can be accelerated by SSE instruction,0-13 for finger, 14-17 for overflowed*/
+    pub bitmap: u32,            // allocation bitmap + pointer bitmap + counter
+    pub version_lock: Arc<AtomicU32>,
 }
 /**
 for Bitmap: 32 bits
@@ -471,7 +471,7 @@ impl<T: Debug + Clone + PartialEq> Bucket<T> {
         meta_hash: u8,
         key: &Key<T>,
         neighbor: &Bucket<T>,
-        stash: &Bucket<T>,
+        stash: &[Bucket<T>],
     ) -> bool {
         let mut value: ValueT = vec![];
         // We are only looking for the neighboring buckets
@@ -489,9 +489,9 @@ impl<T: Debug + Clone + PartialEq> Bucket<T> {
                 // Check in the overflow buckets and decide if we have to check in the stash buckets
                 let mask = self.overflow_bitmap & OVERFLOW_BITMAP_MASK;
                 if mask != 0 {
-                    for i in 0..4 {
-                        if check_bit(mask, i)
-                            && &self.finger_array[14 + i] == meta_hash
+                    for i in 0..4usize {
+                        if check_bit(mask, i as u32)
+                            && self.finger_array[14 + i] == meta_hash
                             && ((1 << i) & self.overflow_member) == 0
                         {
                             test_stash = true;
@@ -502,9 +502,9 @@ impl<T: Debug + Clone + PartialEq> Bucket<T> {
                 if !test_stash {
                     let mask = neighbor.overflow_bitmap & OVERFLOW_BITMAP_MASK;
                     if mask != 0 {
-                        for i in 0..4 {
-                            if check_bit(mask, i)
-                                && &neighbor.finger_array[14 + i] == meta_hash
+                        for i in 0..4usize {
+                            if check_bit(mask, i as u32)
+                                && neighbor.finger_array[14 + i] == meta_hash
                                 && ((1 << i) & neighbor.overflow_member) == 0
                             {
                                 test_stash = true;
@@ -516,7 +516,10 @@ impl<T: Debug + Clone + PartialEq> Bucket<T> {
             }
             if test_stash {
                 for i in 0..K_STASH_BUCKET {
-                    let bucket = None;
+                    let curr_bucket = &stash[i];
+                    if curr_bucket.check_and_get(meta_hash, &key, false, &mut value) {
+                        return false;
+                    }
                 }
             }
         }
@@ -533,6 +536,21 @@ impl<T: Debug + Clone + PartialEq> Bucket<T> {
         self.overflow_count = 0;
         self.clear_stash_check()
     }
+    pub fn find_org_displacement(&self) -> i32 {
+        let mask = get_inverse_number(self.bitmap);
+        if mask == 0 {
+            return -1;
+        }
+        mask.trailing_zeros() as i32
+    }
+
+    pub fn find_probe_displacement(&self) -> i32 {
+        let mask = get_member(self.bitmap);
+        if mask == 0 {
+            return -1;
+        }
+        mask.trailing_zeros() as i32
+    }
 }
 #[derive(Debug, Error)]
 pub enum BucketError {
@@ -548,7 +566,7 @@ pub enum BucketError {
 0000 0000 1110 0010 0000 0000 0000 0101 & 0000 0000 0000 0000 0000 0000 0000 1111
 it returns 5 as the count
 */
-fn get_count(var: u32) -> u32 {
+pub fn get_count(var: u32) -> u32 {
     var.bitand(COUNT_MASK)
 }
 
@@ -556,21 +574,25 @@ fn get_count(var: u32) -> u32 {
 We remove last 4 bits which are for count
 and 14 bits before that which are for pointers
 */
-fn get_bitmap(var: u32) -> u32 {
+pub fn get_bitmap(var: u32) -> u32 {
     var >> 18
 }
-fn get_member(var: u32) -> u32 {
-    var & ALLOC_MASK as u32
+// It returns the overflowed bucket space
+pub fn get_member(var: u32) -> u32 {
+    (var >> 4) & ALLOC_MASK as u32
 }
 
-fn check_bit(var: u8, pos: u32) -> bool {
+pub fn check_bit(var: u8, pos: u32) -> bool {
     var & (1 << pos) > 0
 }
 
-fn check_bit_32(var: u32, pos: u32) -> bool {
+pub fn check_bit_32(var: u32, pos: u32) -> bool {
     var & (1 << pos) > 0
 }
-
+// It returns the empty overflow bucket space
+pub fn get_inverse_number(var: u32) -> u32 {
+    !(var >> 4) & ALLOC_MASK as u32
+}
 #[cfg(test)]
 mod tests {
     use super::*;
