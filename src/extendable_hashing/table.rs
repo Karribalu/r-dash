@@ -233,6 +233,29 @@ impl<T: PartialEq + Debug + Clone> Table<T> {
         false
     }
 }
+pub fn get_mutable_references_of_target_and_neighbors<T: PartialEq + Clone+ Debug>(buckets: &mut Vec<Bucket<T>>, index: usize) -> Option<(&mut Bucket<T>, &mut Bucket<T>, &mut Bucket<T>, &mut Bucket<T>)> {
+    let len = buckets.len();
+    if len < K_NUM_BUCKET {
+        return None; // Ensure we are working with a vector of length 64
+    }
+    let prev_index = if index == 0 { BUCKET_MASK } else { index - 1 };
+    let next_index = (index + 1) & BUCKET_MASK;
+    let next2_index = (index + 2) & BUCKET_MASK;
+
+    if index < len {
+        // Split at index + 1 to get safe mutable references
+        let (left, right) = buckets.split_at_mut(index + 1);
+        // Safe access using calculated indices
+        Some((
+            &mut left[prev_index],    // index - 1 (or last element if index == 0)
+            &mut left[index],         // index
+            &mut right[(next_index - index - 1)], // index + 1
+            &mut right[(next2_index - index - 1)], // index + 2
+        ))
+    } else {
+        None
+    }
+}
 pub fn bucket_index(hash: usize, finger_bits: usize, bucket_mask: usize) -> usize {
     // We do the finger_bits right shift because we use that last 8 bits for finger-print.
     (hash >> finger_bits) & bucket_mask
