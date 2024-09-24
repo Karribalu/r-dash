@@ -1,6 +1,6 @@
-use crate::extendable_hashing::bucket::{get_count, Bucket, BucketError};
+use crate::extendable_hashing::bucket::{get_count, stash_insert, Bucket, BucketError, K_NUM_PAIR_PER_BUCKET};
 use crate::extendable_hashing::directory::Directory;
-use crate::extendable_hashing::{BUCKET_MASK, K_FINGER_BITS, K_NUM_BUCKET, K_STASH_BUCKET};
+use crate::extendable_hashing::{BUCKET_MASK, K_FINGER_BITS, K_NUM_BUCKET, K_STASH_BUCKET, STASH_MASK};
 use crate::hash::ValueT;
 use crate::utils::pair::{Key, Pair};
 use std::cmp::min;
@@ -38,7 +38,7 @@ pub struct Table<T: PartialEq + Debug + Clone> {
     local_depth: usize,
     pattern: usize,
     number: i32,
-    state: Arc<TableState>, /*-1 means this bucket is merging, -2 means this bucket is splitting (SPLITTING), 0 meaning normal bucket, -3 means new bucket (NEW)*/
+    state: Arc<TableState>,
     lock_bit: Arc<Mutex<u32>>, /* for the synchronization of the lazy recovery in one segment*/
 }
 
@@ -67,7 +67,7 @@ impl<T: PartialEq + Debug + Clone> Table<T> {
             self.bucket[i].reset_lock();
         }
     }
-    pub fn insert(
+    pub unsafe fn insert(
         &mut self,
         key: Key<T>,
         value: ValueT,
@@ -76,10 +76,13 @@ impl<T: PartialEq + Debug + Clone> Table<T> {
         directory: &Directory<T>,
     ) -> Result<i32, TableError> {
         let bucket_index = bucket_index(key_hash, K_FINGER_BITS, BUCKET_MASK);
-        let target = &mut self.bucket[bucket_index].clone();
+
+        let buckets_ptr = self.bucket.as_mut_ptr();
+        let target =  &mut *buckets_ptr.add(bucket_index);
         // (bucket_index + 1) & BUCKET_MASK used for wrapping up to 0 when the bucket_index is 63
         // (63 + 1) & 63 = 64 & 63 = 0
-        let neighbor = &mut self.bucket[(bucket_index + 1) & BUCKET_MASK].clone();
+        let neighbor = &mut *buckets_ptr.add((bucket_index + 1) & BUCKET_MASK);
+        // let neighbor = &mut Bucket::new();
         target.get_lock();
         if !neighbor.try_get_lock() {
             target.release_lock();
@@ -104,7 +107,7 @@ impl<T: PartialEq + Debug + Clone> Table<T> {
             && get_count(neighbor.bitmap) == K_NUM_BUCKET as u32
         {
             // Both the buckets are full, We have to do the displacement
-            let next_neighbor = &mut self.bucket[(bucket_index + 2) & BUCKET_MASK];
+            let next_neighbor = &mut *buckets_ptr.add((bucket_index + 2) & BUCKET_MASK);
             if !next_neighbor.try_get_lock() {
                 neighbor.release_lock();
                 target.release_lock();
@@ -114,86 +117,100 @@ impl<T: PartialEq + Debug + Clone> Table<T> {
             }
 
             let displacement_res = Self::next_displace(
-                target,
                 neighbor,
                 next_neighbor,
                 key.clone(),
                 value.clone(),
                 meta_hash,
             );
+            next_neighbor.release_lock();
             if displacement_res {
                 // inserted in the neighboring bucket by displacement
                 return Ok(1);
             }
-            next_neighbor.release_lock();
-
             // Now we check for previous neighbor
             let prev_index = if bucket_index == 0 {
                 K_NUM_BUCKET - 1
             } else {
                 bucket_index - 1
             };
-            let prev_neighbor = &mut self.bucket[prev_index];
+            let prev_neighbor =  &mut *buckets_ptr.add(prev_index);
+            // let prev_neighbor = &mut Bucket::new();
             if !prev_neighbor.try_get_lock() {
-                neighbor.release_lock();
                 target.release_lock();
+                neighbor.release_lock();
                 return Err(TableError::UnableToAcquireLock(
                     "Unable to acquire the lock for previous neighbor".to_string(),
                 ));
             }
 
             let displacement_res =
-                Self::prev_displace(target, neighbor, prev_neighbor, key, value, meta_hash);
+                Self::prev_displace(target, neighbor, prev_neighbor, key.clone(), value.clone(), meta_hash);
+            prev_neighbor.release_lock();
+            // target.release_lock();
+            // neighbor.release_lock();
             if displacement_res {
                 // inserted in the prev neighboring bucket by displacement
                 return Ok(2);
             }
-            prev_neighbor.release_lock();
 
             // Now we try to insert in the stash buckets
+            let stash_bucket = &mut *buckets_ptr.add(K_NUM_BUCKET);
+            if !stash_bucket.try_get_lock(){
+                return Err(TableError::UnableToAcquireLock(
+                    "Unable to acquire the lock for stash bucket".to_string()
+                ));
+            }
+            let mut stash_buckets: Vec<&mut Bucket<T>> = vec![];
+            for i in 0..K_STASH_BUCKET{
+                stash_buckets.push(&mut *buckets_ptr.add(K_NUM_BUCKET + i));
+            }
+            let stash_insert_res = stash_insert(stash_buckets, target, neighbor, key.clone(), value.clone(), meta_hash);
         }
         Ok(10)
     }
-
+    /**
+    Takes a reference Bucket, and it's neighbor, Moves one eligible pair to it's neighbor bucket.
+    Adds the new Pair to the reference bucket.
+    Returns boolean True - Success, False - Failure
+    */
     pub fn next_displace(
-        target: &Bucket<T>,
+        target: &mut Bucket<T>,
         neighbor: &mut Bucket<T>,
-        next_neighbor: &mut Bucket<T>,
         key: Key<T>,
         value: ValueT,
         meta_hash: u8,
     ) -> bool {
-        let displace_index: i32 = neighbor.find_org_displacement();
-        if get_count(next_neighbor.bitmap) != K_NUM_BUCKET as u32 && displace_index != -1 {
-            let neighbor_pair: Pair<T> = neighbor.pairs[displace_index as usize]
+        let displace_index: i32 = target.find_org_displacement();
+        if get_count(neighbor.bitmap) != K_NUM_BUCKET as u32 && displace_index != -1 {
+            let neighbor_pair: Pair<T> = target.pairs[displace_index as usize]
                 .clone()
                 .unwrap()
                 .clone();
-            match next_neighbor.insert(
+            return match neighbor.insert(
                 neighbor_pair.key,
                 neighbor_pair.value,
-                neighbor.finger_array[displace_index as usize],
+                target.finger_array[displace_index as usize],
                 true,
             ) {
                 Ok(_) => {
-                    next_neighbor.release_lock();
-                    neighbor.unset_hash(displace_index as u32);
-                    neighbor.insert_displace(key, value, meta_hash, displace_index, true);
-                    neighbor.release_lock();
-                    target.release_lock();
-                    return true;
+                    target.unset_hash(displace_index as u32);
+                    target.insert_displace(key, value, meta_hash, displace_index, true);
+                    true
                 }
                 Err(_) => {
-                    neighbor.release_lock();
-                    next_neighbor.release_lock();
-                    target.release_lock();
-                    return false;
+                    false
                 }
             }
         }
         false
     }
-
+    /**
+    Takes a reference Bucket, and it's previous neighbor, Moves one eligible pair to it's neighbor bucket.
+    Adds the new Pair to the reference bucket.
+    Returns boolean True - Success, False - Failure
+    The only difference is we pass Probe as false to prev_neighbor bucket which defines we store the pair in extra slots other than 14
+     */
     pub fn prev_displace(
         target: &Bucket<T>,
         neighbor: &mut Bucket<T>,
@@ -208,54 +225,49 @@ impl<T: PartialEq + Debug + Clone> Table<T> {
                 .clone()
                 .unwrap()
                 .clone();
-            match prev_neighbor.insert(
+            return match prev_neighbor.insert(
                 neighbor_pair.key,
                 neighbor_pair.value,
                 neighbor.finger_array[displace_index as usize],
                 false,
             ) {
                 Ok(_) => {
-                    prev_neighbor.release_lock();
                     neighbor.unset_hash(displace_index as u32);
                     neighbor.insert_displace(key, value, meta_hash, displace_index, false);
-                    neighbor.release_lock();
-                    target.release_lock();
-                    return true;
+                    true
                 }
                 Err(_) => {
-                    neighbor.release_lock();
-                    prev_neighbor.release_lock();
-                    target.release_lock();
-                    return false;
+
+                    false
                 }
             }
         }
         false
     }
 }
-pub fn get_mutable_references_of_target_and_neighbors<T: PartialEq + Clone+ Debug>(buckets: &mut Vec<Bucket<T>>, index: usize) -> Option<(&mut Bucket<T>, &mut Bucket<T>, &mut Bucket<T>, &mut Bucket<T>)> {
-    let len = buckets.len();
-    if len < K_NUM_BUCKET {
-        return None; // Ensure we are working with a vector of length 64
-    }
-    let prev_index = if index == 0 { BUCKET_MASK } else { index - 1 };
-    let next_index = (index + 1) & BUCKET_MASK;
-    let next2_index = (index + 2) & BUCKET_MASK;
-
-    if index < len {
-        // Split at index + 1 to get safe mutable references
-        let (left, right) = buckets.split_at_mut(index + 1);
-        // Safe access using calculated indices
-        Some((
-            &mut left[prev_index],    // index - 1 (or last element if index == 0)
-            &mut left[index],         // index
-            &mut right[(next_index - index - 1)], // index + 1
-            &mut right[(next2_index - index - 1)], // index + 2
-        ))
-    } else {
-        None
-    }
-}
+// pub fn get_mutable_references_of_target_and_neighbors<T: PartialEq + Clone+ Debug>(buckets: &mut Vec<Bucket<T>>, index: usize) -> Option<(&mut Bucket<T>, &mut Bucket<T>, &mut Bucket<T>, &mut Bucket<T>)> {
+//     let len = buckets.len();
+//     if len < K_NUM_BUCKET {
+//         return None; // Ensure we are working with a vector of length 64
+//     }
+//     let prev_index = if index == 0 { BUCKET_MASK } else { index - 1 };
+//     let next_index = (index + 1) & BUCKET_MASK;
+//     let next2_index = (index + 2) & BUCKET_MASK;
+//
+//     if index < len {
+//         // Split at index + 1 to get safe mutable references
+//         let (left, right) = buckets.split_at_mut(index + 1);
+//         // Safe access using calculated indices
+//         Some((
+//             &mut left[prev_index],    // index - 1 (or last element if index == 0)
+//             &mut left[index],         // index
+//             &mut right[next_index - index - 1], // index + 1
+//             &mut right[next2_index - index - 1], // index + 2
+//         ))
+//     } else {
+//         None
+//     }
+// }
 pub fn bucket_index(hash: usize, finger_bits: usize, bucket_mask: usize) -> usize {
     // We do the finger_bits right shift because we use that last 8 bits for finger-print.
     (hash >> finger_bits) & bucket_mask

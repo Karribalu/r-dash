@@ -10,7 +10,7 @@ use std::sync::atomic::Ordering::SeqCst;
 use std::sync::{atomic, Arc};
 use thiserror::Error;
 
-const K_NUM_PAIR_PER_BUCKET: u32 = 14;
+pub const K_NUM_PAIR_PER_BUCKET: u32 = 14;
 const COUNT_MASK: u32 = (1 << 4) - 1;
 const OVERFLOW_BITMAP_MASK: u8 = (1 << 4) - 1;
 const OVERFLOW_SET: u8 = 1 << 4;
@@ -239,7 +239,7 @@ impl<T: Debug + Clone + PartialEq> Bucket<T> {
         self.finger_array[index as usize] = meta_hash;
         let mut new_bitmap = self.bitmap | (1 << (index + 18));
         if probe {
-            // Meaning the hash is being inserted the 14 slots not the stash slots
+            // Meaning the hash is being inserted in the 14 slots not the stash slots
             new_bitmap = new_bitmap | (1 << (index + 4));
         }
         new_bitmap += 1; // Increasing the count of occupied slots i.e. last 4 bits
@@ -563,7 +563,7 @@ pub enum BucketError {
 }
 
 /**
-0000 0000 1110 0010 0000 0000 0000 0101 & 0000 0000 0000 0000 0000 0000 0000 1111
+0000 0000 0001 1111 0000 0000 0000 0101 & 0000 0000 0000 0000 0000 0000 0000 1111
 it returns 5 as the count
 */
 pub fn get_count(var: u32) -> u32 {
@@ -593,6 +593,34 @@ pub fn check_bit_32(var: u32, pos: u32) -> bool {
 pub fn get_inverse_number(var: u32) -> u32 {
     !(var >> 4) & ALLOC_MASK as u32
 }
+
+pub fn stash_insert<T>(
+    stash_buckets: Vec<&mut Bucket<T>>,
+    target: &mut Bucket<T>,
+    neighbor: &mut Bucket<T>,
+    key: Key<T>,
+    value: ValueT,
+    meta_hash: u8,
+) -> bool {
+    for stash_bucket in stash_buckets{
+        if get_count(stash_bucket.bitmap) < K_NUM_PAIR_PER_BUCKET{
+            return match stash_bucket.insert(key, value, meta_hash, false){
+                Ok(_) => {
+                    println!("Added the pair to the stash bucket");
+                    true
+                }
+                Err(e) => {
+                    println!("Some error occurred while inserting element to stash buckets");
+                    false
+                }
+            };
+            break;
+        }
+    }
+    false
+}
+
+
 #[cfg(test)]
 mod tests {
     use super::*;
