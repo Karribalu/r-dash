@@ -95,16 +95,19 @@ impl<T: Debug + Clone + PartialEq> Bucket<T> {
         let version_lock = self.version_lock.load(atomic::Ordering::Acquire);
         self.version_lock.store(version_lock + 1 - LOCK_SET, SeqCst);
     }
+    pub fn reset_lock(&self) {
+        self.version_lock.store(0, SeqCst);
+    }
     /**
         Doesn't block the thread till it acquire the lock, Tries to get the lock in the first attempt and returns true if it succeeds else false
     */
     pub fn try_get_lock(&self) -> bool {
-        let v = self.version_lock.load(atomic::Ordering::Relaxed);
+        let v = self.version_lock.load(atomic::Ordering::Acquire);
         if v & LOCK_SET != 0 {
             return false;
         }
         let old_value = v & LOCK_MASK;
-        let new_value = v | LOCK_SET;
+        let new_value = old_value | LOCK_SET;
         self.version_lock
             .compare_exchange(
                 old_value,
@@ -144,26 +147,26 @@ impl<T: Debug + Clone + PartialEq> Bucket<T> {
     If there is an available slot then uses it or else it does the exact search in the neighbor bucket
     */
     pub fn set_indicator(&mut self, meta_hash: u8, neighbor: &mut Bucket<T>, pos: u8) {
-        let mut mask: u8 = self.overflow_bitmap.bitand(OVERFLOW_BITMAP_MASK);
+        let mut mask: u8 = self.overflow_bitmap & OVERFLOW_BITMAP_MASK;
         mask = !mask;
         let mut index: u8 = mask.trailing_zeros() as u8;
 
         if index < 4 {
             // Means a slot is free in the probing bucket
-            self.finger_array[(14 + index) as usize] = meta_hash;
+            self.finger_array[(K_NUM_PAIR_PER_BUCKET + index as u32) as usize] = meta_hash;
             self.overflow_bitmap = (1 << index) | self.overflow_bitmap;
             self.overflow_index =
-                self.overflow_index.bitand(!(3 << (index * 2))) | (pos << (index * 2));
+                self.overflow_index & (!(3 << (index * 2))) | (pos << (index * 2));
         } else {
             // Looking for the free slot in neighboring bucket
-            mask = neighbor.overflow_bitmap.bitand(OVERFLOW_BITMAP_MASK);
+            mask = neighbor.overflow_bitmap & OVERFLOW_BITMAP_MASK;
             mask = !mask;
             index = mask.trailing_zeros() as u8;
             if index < 4 {
-                neighbor.finger_array[(14 + index) as usize] = meta_hash;
+                neighbor.finger_array[(K_NUM_PAIR_PER_BUCKET + index as u32) as usize] = meta_hash;
                 neighbor.overflow_bitmap = (1 << index) | neighbor.overflow_bitmap;
                 neighbor.overflow_index =
-                    neighbor.overflow_index.bitand(!(3 << (index * 2))) | (pos << (index * 2));
+                    neighbor.overflow_index & (!(3 << (index * 2))) | (pos << (index * 2));
                 // Overflow member is only used to track that if there are some overflowed members in neighboring buckets
                 neighbor.overflow_member = (1 << index) | neighbor.overflow_member;
             } else {
@@ -239,7 +242,7 @@ impl<T: Debug + Clone + PartialEq> Bucket<T> {
         self.finger_array[index as usize] = meta_hash;
         let mut new_bitmap = self.bitmap | (1 << (index + 18));
         if probe {
-            // Meaning the hash is being inserted in the 14 slots not the stash slots
+            // Meaning the value is being hosted but not owned by the bucket
             new_bitmap = new_bitmap | (1 << (index + 4));
         }
         new_bitmap += 1; // Increasing the count of occupied slots i.e. last 4 bits
@@ -525,9 +528,6 @@ impl<T: Debug + Clone + PartialEq> Bucket<T> {
         }
         true
     }
-    pub fn reset_lock(&self) {
-        self.version_lock.store(0, SeqCst);
-    }
 
     pub fn reset_overflow_fp(&mut self) {
         self.overflow_bitmap = 0;
@@ -567,7 +567,7 @@ pub enum BucketError {
 it returns 5 as the count
 */
 pub fn get_count(var: u32) -> u32 {
-    var.bitand(COUNT_MASK)
+    var & COUNT_MASK
 }
 
 /**
@@ -594,7 +594,7 @@ pub fn get_inverse_number(var: u32) -> u32 {
     !(var >> 4) & ALLOC_MASK as u32
 }
 
-pub fn stash_insert<T>(
+pub fn stash_insert<T: Debug + Clone + PartialEq>(
     stash_buckets: Vec<&mut Bucket<T>>,
     target: &mut Bucket<T>,
     neighbor: &mut Bucket<T>,
@@ -602,10 +602,12 @@ pub fn stash_insert<T>(
     value: ValueT,
     meta_hash: u8,
 ) -> bool {
-    for stash_bucket in stash_buckets{
-        if get_count(stash_bucket.bitmap) < K_NUM_PAIR_PER_BUCKET{
-            return match stash_bucket.insert(key, value, meta_hash, false){
+    let mut index = 0;
+    for stash_bucket in stash_buckets {
+        if get_count(stash_bucket.bitmap) < K_NUM_PAIR_PER_BUCKET {
+            return match stash_bucket.insert(key, value, meta_hash, false) {
                 Ok(_) => {
+                    target.set_indicator(meta_hash, neighbor, index);
                     println!("Added the pair to the stash bucket");
                     true
                 }
@@ -614,12 +616,11 @@ pub fn stash_insert<T>(
                     false
                 }
             };
-            break;
         }
+        index += 1;
     }
     false
 }
-
 
 #[cfg(test)]
 mod tests {
@@ -633,7 +634,7 @@ mod tests {
     fn test_locking_with_multiple_thread() {
         let bucket: Arc<Bucket<i32>> = Arc::new(Bucket::new());
         let mut handles = vec![];
-        let num_of_threads = 100000;
+        let num_of_threads = 1000;
         let total_dur = Instant::now();
         for i in 0..num_of_threads {
             let mut cloned = Arc::clone(&bucket);
@@ -642,7 +643,7 @@ mod tests {
                 cloned.get_lock();
                 let elapsed = start.elapsed();
                 // println!("Thread {} got lock {:?}", i,elapsed);
-                cloned.reset_lock();
+                cloned.release_lock();
                 elapsed
             });
             handles.push(handle);

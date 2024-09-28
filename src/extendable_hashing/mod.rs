@@ -11,8 +11,8 @@ pub const K_FINGER_BITS: usize = 8;
 pub const K_MASK: usize = (1 << K_FINGER_BITS) - 1;
 // We use log2 to determine the number of bits to wrap the bucket index under K_NUM_BUCKET range
 // Ex: for 64 the bucket mask would be 63, We had to use log instead of -1 to cover the possibility of K_NUM_BUCKET of not being power of 2;
-pub const BUCKET_MASK: usize = 1 << K_NUM_BUCKET.ilog2() - 1;
-pub const STASH_MASK: usize = 1 << K_STASH_BUCKET.ilog2() - 1;
+pub const BUCKET_MASK: usize = (1 << K_NUM_BUCKET.ilog2()) - 1;
+pub const STASH_MASK: usize = (1 << K_STASH_BUCKET.ilog2()) - 1;
 pub const TAIL_MASK: u64 = (1 << 56) - 1;
 pub const HEADER_MASK: u64 = ((1 << 8) - 1) << 56;
 // pub struct ExtendableHashing<T> {

@@ -1,9 +1,7 @@
-use crate::extendable_hashing::bucket::{get_count, stash_insert, Bucket, BucketError, K_NUM_PAIR_PER_BUCKET};
-use crate::extendable_hashing::directory::Directory;
-use crate::extendable_hashing::{BUCKET_MASK, K_FINGER_BITS, K_NUM_BUCKET, K_STASH_BUCKET, STASH_MASK};
+use crate::extendable_hashing::bucket::{get_count, stash_insert, Bucket};
+use crate::extendable_hashing::{BUCKET_MASK, K_FINGER_BITS, K_NUM_BUCKET, K_STASH_BUCKET};
 use crate::hash::ValueT;
 use crate::utils::pair::{Key, Pair};
-use std::cmp::min;
 use std::fmt::Debug;
 use std::ops::{BitXor, Shr};
 use std::sync::{Arc, Mutex};
@@ -28,6 +26,8 @@ pub enum TableError {
     UnableToAcquireLock(String),
     #[error("Duplicate key insertion")]
     KeyExists,
+    #[error("Unable to insert key in any of the buckets")]
+    UnableToInsertKey,
 }
 // Segment
 #[derive(Debug)]
@@ -72,13 +72,12 @@ impl<T: PartialEq + Debug + Clone> Table<T> {
         key: Key<T>,
         value: ValueT,
         key_hash: usize,
-        meta_hash: u8,
-        directory: &Directory<T>,
+        meta_hash: u8, // directory: &Directory<T>,
     ) -> Result<i32, TableError> {
         let bucket_index = bucket_index(key_hash, K_FINGER_BITS, BUCKET_MASK);
 
         let buckets_ptr = self.bucket.as_mut_ptr();
-        let target =  &mut *buckets_ptr.add(bucket_index);
+        let target = &mut *buckets_ptr.add(bucket_index);
         // (bucket_index + 1) & BUCKET_MASK used for wrapping up to 0 when the bucket_index is 63
         // (63 + 1) & 63 = 64 & 63 = 0
         let neighbor = &mut *buckets_ptr.add((bucket_index + 1) & BUCKET_MASK);
@@ -90,9 +89,10 @@ impl<T: PartialEq + Debug + Clone> Table<T> {
                 "Unable to acquire neighbor lock".to_string(),
             ));
         }
-        let dir = directory;
+        // let dir = directory;
+        // TODO: Check if we need to add the next block
         // Trying to get the MSBs of the key to determine the segment index
-        let segment_index = key_hash >> (8 * size_of::<usize>() - dir.global_depth);
+        // let segment_index = key_hash >> (8 * size_of::<usize>() - dir.global_depth);
         // if dir.x[segment_index] != self {
         //     target.release_lock();
         //     neighbor.release_lock();
@@ -134,7 +134,7 @@ impl<T: PartialEq + Debug + Clone> Table<T> {
             } else {
                 bucket_index - 1
             };
-            let prev_neighbor =  &mut *buckets_ptr.add(prev_index);
+            let prev_neighbor = &mut *buckets_ptr.add(prev_index);
             // let prev_neighbor = &mut Bucket::new();
             if !prev_neighbor.try_get_lock() {
                 target.release_lock();
@@ -144,11 +144,14 @@ impl<T: PartialEq + Debug + Clone> Table<T> {
                 ));
             }
 
-            let displacement_res =
-                Self::prev_displace(target, neighbor, prev_neighbor, key.clone(), value.clone(), meta_hash);
+            let displacement_res = Self::prev_displace(
+                neighbor,
+                prev_neighbor,
+                key.clone(),
+                value.clone(),
+                meta_hash,
+            );
             prev_neighbor.release_lock();
-            // target.release_lock();
-            // neighbor.release_lock();
             if displacement_res {
                 // inserted in the prev neighboring bucket by displacement
                 return Ok(2);
@@ -156,18 +159,63 @@ impl<T: PartialEq + Debug + Clone> Table<T> {
 
             // Now we try to insert in the stash buckets
             let stash_bucket = &mut *buckets_ptr.add(K_NUM_BUCKET);
-            if !stash_bucket.try_get_lock(){
+            if !stash_bucket.try_get_lock() {
                 return Err(TableError::UnableToAcquireLock(
-                    "Unable to acquire the lock for stash bucket".to_string()
+                    "Unable to acquire the lock for stash bucket".to_string(),
                 ));
             }
             let mut stash_buckets: Vec<&mut Bucket<T>> = vec![];
-            for i in 0..K_STASH_BUCKET{
+            for i in 0..K_STASH_BUCKET {
                 stash_buckets.push(&mut *buckets_ptr.add(K_NUM_BUCKET + i));
             }
-            let stash_insert_res = stash_insert(stash_buckets, target, neighbor, key.clone(), value.clone(), meta_hash);
+            let stash_insert_res = stash_insert(
+                stash_buckets,
+                target,
+                neighbor,
+                key.clone(),
+                value.clone(),
+                meta_hash,
+            );
+            stash_bucket.release_lock();
+            target.release_lock();
+            neighbor.release_lock();
+            if stash_insert_res {
+                Ok(3)
+            } else {
+                Err(TableError::UnableToInsertKey)
+            }
+        } else {
+            // Insert in the bucket which has lesser keys
+            if get_count(target.bitmap) <= get_count(neighbor.bitmap) {
+                match target.insert(key.clone(), value.clone(), meta_hash, false) {
+                    Ok(_) => {
+                        target.release_lock();
+                        neighbor.release_lock();
+                        Ok(0)
+                    }
+                    Err(error) => {
+                        target.release_lock();
+                        neighbor.release_lock();
+                        println!("Error while inserting the key in target bucket {:?}", error);
+                        Err(TableError::UnableToInsertKey)
+                    }
+                }
+            } else {
+                match neighbor.insert(key.clone(), value.clone(), meta_hash, true) {
+                    Ok(_) => {
+                        target.release_lock();
+                        neighbor.release_lock();
+                        Ok(0)
+                    }
+                    Err(error) => {
+                        target.release_lock();
+                        neighbor.release_lock();
+                        println!("Error while inserting the key in target bucket {:?}", error);
+                        Err(TableError::UnableToInsertKey)
+                    }
+                }
+            }
         }
-        Ok(10)
     }
     /**
     Takes a reference Bucket, and it's neighbor, Moves one eligible pair to it's neighbor bucket.
@@ -198,10 +246,8 @@ impl<T: PartialEq + Debug + Clone> Table<T> {
                     target.insert_displace(key, value, meta_hash, displace_index, true);
                     true
                 }
-                Err(_) => {
-                    false
-                }
-            }
+                Err(_) => false,
+            };
         }
         false
     }
@@ -212,62 +258,35 @@ impl<T: PartialEq + Debug + Clone> Table<T> {
     The only difference is we pass Probe as false to prev_neighbor bucket which defines we store the pair in extra slots other than 14
      */
     pub fn prev_displace(
-        target: &Bucket<T>,
-        neighbor: &mut Bucket<T>,
+        target: &mut Bucket<T>,
         prev_neighbor: &mut Bucket<T>,
         key: Key<T>,
         value: ValueT,
         meta_hash: u8,
     ) -> bool {
-        let displace_index = neighbor.find_probe_displacement();
+        let displace_index = target.find_probe_displacement();
         if get_count(prev_neighbor.bitmap) != K_NUM_BUCKET as u32 && displace_index != -1 {
-            let neighbor_pair: Pair<T> = neighbor.pairs[displace_index as usize]
+            let neighbor_pair: Pair<T> = target.pairs[displace_index as usize]
                 .clone()
                 .unwrap()
                 .clone();
             return match prev_neighbor.insert(
                 neighbor_pair.key,
                 neighbor_pair.value,
-                neighbor.finger_array[displace_index as usize],
+                target.finger_array[displace_index as usize],
                 false,
             ) {
                 Ok(_) => {
-                    neighbor.unset_hash(displace_index as u32);
-                    neighbor.insert_displace(key, value, meta_hash, displace_index, false);
+                    target.unset_hash(displace_index as u32);
+                    target.insert_displace(key, value, meta_hash, displace_index, false);
                     true
                 }
-                Err(_) => {
-
-                    false
-                }
-            }
+                Err(_) => false,
+            };
         }
         false
     }
 }
-// pub fn get_mutable_references_of_target_and_neighbors<T: PartialEq + Clone+ Debug>(buckets: &mut Vec<Bucket<T>>, index: usize) -> Option<(&mut Bucket<T>, &mut Bucket<T>, &mut Bucket<T>, &mut Bucket<T>)> {
-//     let len = buckets.len();
-//     if len < K_NUM_BUCKET {
-//         return None; // Ensure we are working with a vector of length 64
-//     }
-//     let prev_index = if index == 0 { BUCKET_MASK } else { index - 1 };
-//     let next_index = (index + 1) & BUCKET_MASK;
-//     let next2_index = (index + 2) & BUCKET_MASK;
-//
-//     if index < len {
-//         // Split at index + 1 to get safe mutable references
-//         let (left, right) = buckets.split_at_mut(index + 1);
-//         // Safe access using calculated indices
-//         Some((
-//             &mut left[prev_index],    // index - 1 (or last element if index == 0)
-//             &mut left[index],         // index
-//             &mut right[next_index - index - 1], // index + 1
-//             &mut right[next2_index - index - 1], // index + 2
-//         ))
-//     } else {
-//         None
-//     }
-// }
 pub fn bucket_index(hash: usize, finger_bits: usize, bucket_mask: usize) -> usize {
     // We do the finger_bits right shift because we use that last 8 bits for finger-print.
     (hash >> finger_bits) & bucket_mask
@@ -276,6 +295,9 @@ pub fn bucket_index(hash: usize, finger_bits: usize, bucket_mask: usize) -> usiz
 mod tests {
     use crate::extendable_hashing::table::Table;
     use crate::extendable_hashing::{K_NUM_BUCKET, K_STASH_BUCKET};
+    use crate::hash::ValueT;
+    use crate::utils::hashing::calculate_hash;
+    use crate::utils::pair::Key;
 
     #[test]
     pub fn test_new_table() {
@@ -304,5 +326,16 @@ mod tests {
                 .all(|x| !x),
             true
         );
+    }
+    #[test]
+    pub fn test_insert_basic(){
+        let mut table = Table::<i32>::new();
+        let key = Key::new(10);
+        let value = String::from("Hello World");
+        let hash = calculate_hash(&key.key);
+        unsafe {
+            let res = table.insert(key, value.into_bytes(), hash as usize, hash);
+            assert_eq!(res.unwrap(), 0);
+        }
     }
 }
