@@ -81,7 +81,6 @@ impl<T: PartialEq + Debug + Clone> Table<T> {
         // (bucket_index + 1) & BUCKET_MASK used for wrapping up to 0 when the bucket_index is 63
         // (63 + 1) & 63 = 64 & 63 = 0
         let neighbor = &mut *buckets_ptr.add((bucket_index + 1) & BUCKET_MASK);
-        // let neighbor = &mut Bucket::new();
         target.get_lock();
         if !neighbor.try_get_lock() {
             target.release_lock();
@@ -135,7 +134,6 @@ impl<T: PartialEq + Debug + Clone> Table<T> {
                 bucket_index - 1
             };
             let prev_neighbor = &mut *buckets_ptr.add(prev_index);
-            // let prev_neighbor = &mut Bucket::new();
             if !prev_neighbor.try_get_lock() {
                 target.release_lock();
                 neighbor.release_lock();

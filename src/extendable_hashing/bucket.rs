@@ -6,7 +6,7 @@ use std::error::Error;
 use std::fmt::Debug;
 use std::ops::BitAnd;
 use std::sync::atomic::AtomicU32;
-use std::sync::atomic::Ordering::SeqCst;
+use std::sync::atomic::Ordering::{Acquire, Release, SeqCst};
 use std::sync::{atomic, Arc};
 use thiserror::Error;
 
@@ -16,9 +16,9 @@ const OVERFLOW_BITMAP_MASK: u8 = (1 << 4) - 1;
 const OVERFLOW_SET: u8 = 1 << 4;
 const STASH_BUCKET: u8 = 2;
 const STASH_MASK: usize = (1 << STASH_BUCKET.ilog2()) - 1;
-const ALLOC_MASK: usize = 1 << 4 - 1;
+const ALLOC_MASK: usize = (1 << 4) - 1;
 const LOCK_SET: u32 = 1 << 31;
-const LOCK_MASK: u32 = 1 << 31 - 1;
+const LOCK_MASK: u32 = (1 << 31) - 1;
 #[derive(Debug, Clone)]
 pub struct Bucket<T: PartialEq> {
     pub pairs: Vec<Option<Pair<T>>>,
@@ -69,6 +69,7 @@ impl<T: Debug + Clone + PartialEq> Bucket<T> {
                 old_value = self.version_lock.load(atomic::Ordering::Acquire);
                 if old_value & LOCK_SET == 0 {
                     old_value &= LOCK_MASK;
+                    let hello = old_value;
                     break;
                 }
             }
@@ -82,8 +83,8 @@ impl<T: Debug + Clone + PartialEq> Bucket<T> {
                 .compare_exchange(
                     old_value,
                     new_value,
-                    atomic::Ordering::Acquire,
-                    atomic::Ordering::Acquire,
+                    Acquire,
+                   Acquire,
                 )
                 .is_ok()
             {
@@ -93,7 +94,7 @@ impl<T: Debug + Clone + PartialEq> Bucket<T> {
     }
     pub fn release_lock(&self) {
         let version_lock = self.version_lock.load(atomic::Ordering::Acquire);
-        self.version_lock.store(version_lock + 1 - LOCK_SET, SeqCst);
+        self.version_lock.store(version_lock + 1 - LOCK_SET, Release);
     }
     pub fn reset_lock(&self) {
         self.version_lock.store(0, SeqCst);
@@ -102,7 +103,7 @@ impl<T: Debug + Clone + PartialEq> Bucket<T> {
         Doesn't block the thread till it acquire the lock, Tries to get the lock in the first attempt and returns true if it succeeds else false
     */
     pub fn try_get_lock(&self) -> bool {
-        let v = self.version_lock.load(atomic::Ordering::Acquire);
+        let v = self.version_lock.load(Acquire);
         if v & LOCK_SET != 0 {
             return false;
         }
@@ -112,8 +113,8 @@ impl<T: Debug + Clone + PartialEq> Bucket<T> {
             .compare_exchange(
                 old_value,
                 new_value,
-                atomic::Ordering::Acquire,
-                atomic::Ordering::Acquire,
+                Acquire,
+                Acquire,
             )
             .is_ok()
     }
