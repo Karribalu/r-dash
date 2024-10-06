@@ -1,4 +1,4 @@
-use crate::extendable_hashing::bucket::{get_count, stash_insert, Bucket};
+use crate::extendable_hashing::bucket::{get_count, stash_insert, Bucket, K_NUM_PAIR_PER_BUCKET};
 use crate::extendable_hashing::{BUCKET_MASK, K_FINGER_BITS, K_NUM_BUCKET, K_STASH_BUCKET};
 use crate::hash::ValueT;
 use crate::utils::pair::{Key, Pair};
@@ -102,8 +102,8 @@ impl<T: PartialEq + Debug + Clone> Table<T> {
             target.release_lock();
             return Err(TableError::KeyExists);
         }
-        if get_count(target.bitmap) == K_NUM_BUCKET as u32
-            && get_count(neighbor.bitmap) == K_NUM_BUCKET as u32
+        if get_count(target.bitmap) == K_NUM_PAIR_PER_BUCKET
+            && get_count(neighbor.bitmap) == K_NUM_PAIR_PER_BUCKET
         {
             // Both the buckets are full, We have to do the displacement
             let next_neighbor = &mut *buckets_ptr.add((bucket_index + 2) & BUCKET_MASK);
@@ -125,7 +125,9 @@ impl<T: PartialEq + Debug + Clone> Table<T> {
             next_neighbor.release_lock();
             if displacement_res {
                 // inserted in the neighboring bucket by displacement
-                return Ok(1);
+                target.release_lock();
+                neighbor.release_lock();
+                return Ok(2);
             }
             // Now we check for previous neighbor
             let prev_index = if bucket_index == 0 {
@@ -152,12 +154,16 @@ impl<T: PartialEq + Debug + Clone> Table<T> {
             prev_neighbor.release_lock();
             if displacement_res {
                 // inserted in the prev neighboring bucket by displacement
-                return Ok(2);
+                target.release_lock();
+                neighbor.release_lock();
+                return Ok(3);
             }
 
             // Now we try to insert in the stash buckets
             let stash_bucket = &mut *buckets_ptr.add(K_NUM_BUCKET);
             if !stash_bucket.try_get_lock() {
+                target.release_lock();
+                neighbor.release_lock();
                 return Err(TableError::UnableToAcquireLock(
                     "Unable to acquire the lock for stash bucket".to_string(),
                 ));
@@ -178,7 +184,7 @@ impl<T: PartialEq + Debug + Clone> Table<T> {
             target.release_lock();
             neighbor.release_lock();
             if stash_insert_res {
-                Ok(3)
+                Ok(4)
             } else {
                 Err(TableError::UnableToInsertKey)
             }
@@ -203,12 +209,15 @@ impl<T: PartialEq + Debug + Clone> Table<T> {
                     Ok(_) => {
                         target.release_lock();
                         neighbor.release_lock();
-                        Ok(0)
+                        Ok(1)
                     }
                     Err(error) => {
                         target.release_lock();
                         neighbor.release_lock();
-                        println!("Error while inserting the key in target bucket {:?}", error);
+                        println!(
+                            "Error while inserting the key in neighbor bucket {:?}",
+                            error
+                        );
                         Err(TableError::UnableToInsertKey)
                     }
                 }
@@ -291,11 +300,18 @@ pub fn bucket_index(hash: usize, finger_bits: usize, bucket_mask: usize) -> usiz
 }
 
 mod tests {
-    use crate::extendable_hashing::table::Table;
-    use crate::extendable_hashing::{K_NUM_BUCKET, K_STASH_BUCKET};
-    use crate::hash::ValueT;
+    use crate::extendable_hashing::bucket::meta_hash;
+    use crate::extendable_hashing::table::{bucket_index, Table};
+    use crate::extendable_hashing::{
+        BUCKET_MASK, K_FINGER_BITS, K_MASK, K_NUM_BUCKET, K_STASH_BUCKET,
+    };
     use crate::utils::hashing::calculate_hash;
     use crate::utils::pair::Key;
+    use std::fmt::format;
+    use std::fs::File;
+    use std::io;
+    use std::io::Write;
+    use std::time::SystemTime;
 
     #[test]
     pub fn test_new_table() {
@@ -326,14 +342,81 @@ mod tests {
         );
     }
     #[test]
-    pub fn test_insert_basic(){
+    pub fn test_insert_basic() {
         let mut table = Table::<i32>::new();
         let key = Key::new(10);
         let value = String::from("Hello World");
         let hash = calculate_hash(&key.key);
         unsafe {
-            let res = table.insert(key, value.into_bytes(), hash as usize, hash);
+            let res = table.insert(key, value.into_bytes(), hash, meta_hash(hash));
             assert_eq!(res.unwrap(), 0);
         }
+    }
+
+    #[test]
+    pub fn test_insert_for_all_buckets() {
+        let mut table = Table::<i32>::new();
+        let value = String::from("Hello World");
+        let mut target_bucket = 0;
+        let mut neighbor_bucket = 0;
+        let mut next_neighbor_bucket = 0;
+        let mut prev_neighbor_bucket = 0;
+        let mut stash_bucket = 0;
+        let mut failed_count = 0;
+        let start_time = SystemTime::now();
+        for i in 13000..14500 {
+            let key = Key::new(i);
+            let hash = calculate_hash(&key.key);
+            let meta_hash = (hash & K_MASK) as u8;
+            let value = value.clone();
+            let bucket_index = bucket_index(hash, K_FINGER_BITS, BUCKET_MASK);
+            // let str = format!(
+            //     "{:?} inserted in {} with meta_hash {}",
+            //     key, bucket_index, meta_hash);
+            // file.write(&*str.into_bytes()).expect("TODO: panic message");
+            // println!(
+            //     "{:?} inserted in {} with meta_hash {}",
+            //     key, bucket_index, meta_hash
+            // );
+            unsafe {
+                let res = table.insert(key, value.into_bytes(), hash, meta_hash);
+                match res {
+                    Ok(ans) => match ans {
+                        0 => target_bucket += 1,
+                        1 => neighbor_bucket += 1,
+                        2 => next_neighbor_bucket += 1,
+                        3 => prev_neighbor_bucket += 1,
+                        4 => stash_bucket += 1,
+                        _ => {
+                            println!("Some other bucket")
+                        }
+                    },
+                    Err(err) => {
+                        // println!("Error occurred while inserting element {:?}", err);
+                        // println!(
+                        //     "target: {} \n neighbor: {} \n next: {} \n prev: {} \n stash:{}",
+                        //     target_bucket,
+                        //     neighbor_bucket,
+                        //     next_neighbor_bucket,
+                        //     prev_neighbor_bucket,
+                        //     stash_bucket
+                        // );
+                        failed_count += 1;
+                    }
+                }
+            }
+        }
+        println!("Time elapsed {:?}", start_time.elapsed());
+        println!(
+            "target: {} \n neighbor: {} \n next: {} \n prev: {} \n stash:{} \n failed-count: {}",
+            target_bucket,
+            neighbor_bucket,
+            next_neighbor_bucket,
+            prev_neighbor_bucket,
+            stash_bucket,
+            failed_count
+        );
+        println!("failed {}", failed_count);
+        io::stdout().flush().unwrap();
     }
 }

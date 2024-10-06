@@ -1,4 +1,4 @@
-use crate::extendable_hashing::K_STASH_BUCKET;
+use crate::extendable_hashing::{K_MASK, K_STASH_BUCKET};
 use crate::hash::ValueT;
 use crate::utils::pair::{Key, Pair};
 use crate::utils::var_compare;
@@ -16,7 +16,7 @@ const OVERFLOW_BITMAP_MASK: u8 = (1 << 4) - 1;
 const OVERFLOW_SET: u8 = 1 << 4;
 const STASH_BUCKET: u8 = 2;
 const STASH_MASK: usize = (1 << STASH_BUCKET.ilog2()) - 1;
-const ALLOC_MASK: usize = (1 << 4) - 1;
+const ALLOC_MASK: usize = (1 << K_NUM_PAIR_PER_BUCKET) - 1;
 const LOCK_SET: u32 = 1 << 31;
 const LOCK_MASK: u32 = (1 << 31) - 1;
 #[derive(Debug, Clone)]
@@ -33,7 +33,7 @@ pub struct Bucket<T: PartialEq> {
 }
 /**
 for Bitmap: 32 bits
-0000 0000 1110 00 10 0000 0000 0000 0101
+0000 0000 1110 00 00 0000 0000 0000 0101
 First 14 bits are for allocating the buckets
 Next 4 is for stash buckets
 Next 10 is for pointers
@@ -80,12 +80,7 @@ impl<T: Debug + Clone + PartialEq> Bucket<T> {
             // If the lock value is same as old_value, We can change the lock to new_value which is the locked state.
             if self
                 .version_lock
-                .compare_exchange(
-                    old_value,
-                    new_value,
-                    Acquire,
-                   Acquire,
-                )
+                .compare_exchange(old_value, new_value, Acquire, Acquire)
                 .is_ok()
             {
                 break;
@@ -94,7 +89,8 @@ impl<T: Debug + Clone + PartialEq> Bucket<T> {
     }
     pub fn release_lock(&self) {
         let version_lock = self.version_lock.load(atomic::Ordering::Acquire);
-        self.version_lock.store(version_lock + 1 - LOCK_SET, Release);
+        self.version_lock
+            .store(version_lock + 1 - LOCK_SET, Release);
     }
     pub fn reset_lock(&self) {
         self.version_lock.store(0, SeqCst);
@@ -110,12 +106,7 @@ impl<T: Debug + Clone + PartialEq> Bucket<T> {
         let old_value = v & LOCK_MASK;
         let new_value = old_value | LOCK_SET;
         self.version_lock
-            .compare_exchange(
-                old_value,
-                new_value,
-                Acquire,
-                Acquire,
-            )
+            .compare_exchange(old_value, new_value, Acquire, Acquire)
             .is_ok()
     }
     pub fn find_empty_slot(&self) -> i32 {
@@ -123,7 +114,6 @@ impl<T: Debug + Clone + PartialEq> Bucket<T> {
             return -1;
         }
         let mask = !get_bitmap(self.bitmap);
-        println!("{}", mask.trailing_zeros());
         mask.trailing_zeros() as i32
     }
     pub fn is_lock(&self) -> bool {
@@ -538,7 +528,7 @@ impl<T: Debug + Clone + PartialEq> Bucket<T> {
         self.clear_stash_check()
     }
     pub fn find_org_displacement(&self) -> i32 {
-        let mask = get_inverse_number(self.bitmap);
+        let mask = get_inverse_member(self.bitmap);
         if mask == 0 {
             return -1;
         }
@@ -591,10 +581,12 @@ pub fn check_bit_32(var: u32, pos: u32) -> bool {
     var & (1 << pos) > 0
 }
 // It returns the empty overflow bucket space
-pub fn get_inverse_number(var: u32) -> u32 {
+pub fn get_inverse_member(var: u32) -> u32 {
     !(var >> 4) & ALLOC_MASK as u32
 }
-
+pub fn meta_hash(var: usize) -> u8 {
+    (var & K_MASK) as u8
+}
 pub fn stash_insert<T: Debug + Clone + PartialEq>(
     stash_buckets: Vec<&mut Bucket<T>>,
     target: &mut Bucket<T>,
@@ -626,6 +618,7 @@ pub fn stash_insert<T: Debug + Clone + PartialEq>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::extendable_hashing::K_MASK;
     use crate::utils::hashing::calculate_hash;
     use std::ops::AddAssign;
     use std::thread;
@@ -675,7 +668,7 @@ mod tests {
 
             let hash = calculate_hash(&i);
             let key = Key::new(i);
-            let response = bucket.insert(key, value, hash, true);
+            let response = bucket.insert(key, value, meta_hash(hash), true);
             match response {
                 Ok(_) => {
                     success += 1;
@@ -694,7 +687,7 @@ mod tests {
             let key = Key::new(*key_str);
             let start = Instant::now();
             // Calculate the elapsed time
-            if bucket.check_and_get(hash, &key, false, &mut vector) {
+            if bucket.check_and_get(hash as u8, &key, false, &mut vector) {
                 println!("found the key {:?}", vector);
             } else {
                 println!("Didn't found the key {}", cloned_key);
@@ -704,7 +697,7 @@ mod tests {
         }
         let hash = calculate_hash(&ans[5]);
         let key: Key<i32> = Key::new(ans[5]);
-        let delete = bucket.delete(key, hash, false);
+        let delete = bucket.delete(key, hash as u8, false);
         match delete {
             Ok(_) => {
                 println!("found the key to delete {:?}", ans);
@@ -713,7 +706,7 @@ mod tests {
                 let start = Instant::now();
                 // Calculate the elapsed time
 
-                if bucket.check_and_get(hash, &key, false, &mut vector) {
+                if bucket.check_and_get(meta_hash(hash), &key, false, &mut vector) {
                     println!("found the key {:?}", vector);
                 } else {
                     println!("Didn't found the key {}", ans[5]);
@@ -726,7 +719,7 @@ mod tests {
             }
         }
         let key: Key<i32> = Key::new(ans[5]);
-        let delete = bucket.delete(key, hash, false);
+        let delete = bucket.delete(key, meta_hash(hash), false);
         match delete {
             Ok(_) => {
                 println!("found the key to delete {:?}", ans);
@@ -748,7 +741,7 @@ mod tests {
 
             let hash = calculate_hash(&key);
             let key = Key::new(key);
-            let response = bucket.insert(key, value, hash, true);
+            let response = bucket.insert(key, value, meta_hash(hash), true);
             match response {
                 Ok(slot) => {
                     let key = String::from(format!("let hash = calculate_hash(&key) {}", i));
@@ -771,7 +764,7 @@ mod tests {
             let start = Instant::now();
             // Calculate the elapsed time
 
-            if bucket.check_and_get(hash, &key, false, &mut vector) {
+            if bucket.check_and_get(meta_hash(hash), &key, false, &mut vector) {
                 println!("found the key {:?}", vector);
             } else {
                 println!("Didn't found the key {}", cloned_key);
