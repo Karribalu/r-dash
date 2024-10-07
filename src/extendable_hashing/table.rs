@@ -229,7 +229,7 @@ impl<T: PartialEq + Debug + Clone> Table<T> {
     Adds the new Pair to the reference bucket.
     Returns boolean True - Success, False - Failure
     */
-    pub fn next_displace(
+    fn next_displace(
         target: &mut Bucket<T>,
         neighbor: &mut Bucket<T>,
         key: Key<T>,
@@ -293,6 +293,27 @@ impl<T: PartialEq + Debug + Clone> Table<T> {
         }
         false
     }
+
+    pub unsafe fn search(&mut self, key: Key<T>, key_hash: usize, meta_hash: u8) -> Option<ValueT> {
+        let bucket_index = bucket_index(key_hash, K_FINGER_BITS, BUCKET_MASK);
+
+        let buckets_ptr = self.bucket.as_mut_ptr();
+        let target = &mut *buckets_ptr.add(bucket_index);
+
+        let mut value: ValueT = vec![];
+        if target.check_and_get(meta_hash, &key, false, &mut value) {
+            return Some(value);
+        }
+        let neighbor = &mut *buckets_ptr.add((bucket_index + 1) & BUCKET_MASK);
+        if neighbor.check_and_get(meta_hash, &key, true, &mut value) {
+            return Some(value);
+        }
+        let stash_bucket = &mut *buckets_ptr.add(K_NUM_BUCKET);
+        if stash_bucket.check_and_get(meta_hash, &key, false, &mut value) {
+            return Some(value);
+        }
+        None
+    }
 }
 pub fn bucket_index(hash: usize, finger_bits: usize, bucket_mask: usize) -> usize {
     // We do the finger_bits right shift because we use that last 8 bits for finger-print.
@@ -307,8 +328,7 @@ mod tests {
     };
     use crate::utils::hashing::calculate_hash;
     use crate::utils::pair::Key;
-    use std::fmt::format;
-    use std::fs::File;
+    use std::collections::HashSet;
     use std::io;
     use std::io::Write;
     use std::time::SystemTime;
@@ -418,5 +438,67 @@ mod tests {
         );
         println!("failed {}", failed_count);
         io::stdout().flush().unwrap();
+    }
+
+    #[test]
+    pub fn test_search_for_all_buckets() {
+        let mut table = Table::<i32>::new();
+        let value = String::from("Hello World");
+        let mut target_bucket = 0;
+        let mut neighbor_bucket = 0;
+        let mut next_neighbor_bucket = 0;
+        let mut prev_neighbor_bucket = 0;
+        let mut stash_bucket = 0;
+        let mut failed_count = 0;
+        let mut inserted = HashSet::new();
+        for i in 13000..14500 {
+            let key = Key::new(i);
+            let hash = calculate_hash(&key.key);
+            let meta_hash = (hash & K_MASK) as u8;
+            let value = value.clone();
+            unsafe {
+                let res = table.insert(key, value.into_bytes(), hash, meta_hash);
+                match &res {
+                    Ok(ans) => match ans {
+                        0 => target_bucket += 1,
+                        1 => neighbor_bucket += 1,
+                        2 => next_neighbor_bucket += 1,
+                        3 => prev_neighbor_bucket += 1,
+                        4 => stash_bucket += 1,
+                        _ => {
+                            println!("Some other bucket")
+                        }
+                    },
+                    Err(err) => {
+                        failed_count += 1;
+                    }
+                }
+                if res.is_ok() {
+                    inserted.insert(i);
+                }
+            }
+        }
+        println!("failed count for inserting is {}", failed_count);
+        let mut not_found = 0;
+        let mut failed = HashSet::new();
+        for i in 13000..14500 {
+            let key = Key::new(i);
+            let hash = calculate_hash(&key.key);
+            let meta_hash = (hash & K_MASK) as u8;
+            unsafe {
+                match table.search(key, hash, meta_hash) {
+                    None => {
+                        failed.insert(i);
+                        not_found += 1;
+                    }
+                    Some(value) => {
+                        println!("Item found for key {} value: {:?}", i, value);
+                    }
+                }
+            }
+        }
+        let res = inserted.intersection(&failed);
+        println!("Failed but inserted {:?}", res);
+        println!("Total search failures are {}", not_found);
     }
 }

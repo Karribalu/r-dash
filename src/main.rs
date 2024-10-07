@@ -1,5 +1,6 @@
 #![feature(let_chains)]
 #![feature(integer_atomics)]
+extern crate core;
 
 mod extendable_hashing;
 mod hash;

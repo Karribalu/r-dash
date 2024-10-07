@@ -117,7 +117,7 @@ impl<T: Debug + Clone + PartialEq> Bucket<T> {
         mask.trailing_zeros() as i32
     }
     pub fn is_lock(&self) -> bool {
-        self.version_lock.load(atomic::Ordering::Relaxed) != 0
+        self.version_lock.load(Acquire) != 0
     }
 
     /*true indicates overflow, needs extra check in the stash*/
@@ -343,7 +343,7 @@ impl<T: Debug + Clone + PartialEq> Bucket<T> {
         }
         false
     }
-    pub fn insert_displace(
+    pub(crate) fn insert_displace(
         &mut self,
         key: Key<T>,
         value: ValueT,
