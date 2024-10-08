@@ -256,7 +256,7 @@ impl<T: Debug + Clone + PartialEq> Bucket<T> {
         let slot = self.find_empty_slot();
         assert!(slot < K_NUM_PAIR_PER_BUCKET as i32);
         if slot == -1 {
-            println!("Cannot find the empty slot, for key {:?}", key);
+            // println!("Cannot find the empty slot, for key {:?}", key);
             return Err(BucketError::BucketFull);
         }
         self.pairs[slot as usize] = Some(Pair::new(key, value));

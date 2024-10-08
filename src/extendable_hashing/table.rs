@@ -22,7 +22,7 @@ pub enum TableError {
     Internal,
     #[error("Item does not exist")]
     ItemDoesntExist,
-    #[error("Unable to aquire lock")]
+    #[error("Unable to acquire lock")]
     UnableToAcquireLock(String),
     #[error("Duplicate key insertion")]
     KeyExists,
@@ -145,7 +145,7 @@ impl<T: PartialEq + Debug + Clone> Table<T> {
             }
 
             let displacement_res = Self::prev_displace(
-                neighbor,
+                target,
                 prev_neighbor,
                 key.clone(),
                 value.clone(),
@@ -237,7 +237,7 @@ impl<T: PartialEq + Debug + Clone> Table<T> {
         meta_hash: u8,
     ) -> bool {
         let displace_index: i32 = target.find_org_displacement();
-        if get_count(neighbor.bitmap) != K_NUM_BUCKET as u32 && displace_index != -1 {
+        if get_count(neighbor.bitmap) != K_NUM_PAIR_PER_BUCKET && displace_index != -1 {
             let neighbor_pair: Pair<T> = target.pairs[displace_index as usize]
                 .clone()
                 .unwrap()
@@ -272,7 +272,7 @@ impl<T: PartialEq + Debug + Clone> Table<T> {
         meta_hash: u8,
     ) -> bool {
         let displace_index = target.find_probe_displacement();
-        if get_count(prev_neighbor.bitmap) != K_NUM_BUCKET as u32 && displace_index != -1 {
+        if get_count(prev_neighbor.bitmap) != K_NUM_PAIR_PER_BUCKET && displace_index != -1 {
             let neighbor_pair: Pair<T> = target.pairs[displace_index as usize]
                 .clone()
                 .unwrap()
@@ -298,19 +298,21 @@ impl<T: PartialEq + Debug + Clone> Table<T> {
         let bucket_index = bucket_index(key_hash, K_FINGER_BITS, BUCKET_MASK);
 
         let buckets_ptr = self.bucket.as_mut_ptr();
-        let target = &mut *buckets_ptr.add(bucket_index);
+        let target = &*buckets_ptr.add(bucket_index);
 
         let mut value: ValueT = vec![];
         if target.check_and_get(meta_hash, &key, false, &mut value) {
             return Some(value);
         }
-        let neighbor = &mut *buckets_ptr.add((bucket_index + 1) & BUCKET_MASK);
+        let neighbor = &*buckets_ptr.add((bucket_index + 1) & BUCKET_MASK);
         if neighbor.check_and_get(meta_hash, &key, true, &mut value) {
             return Some(value);
         }
-        let stash_bucket = &mut *buckets_ptr.add(K_NUM_BUCKET);
-        if stash_bucket.check_and_get(meta_hash, &key, false, &mut value) {
-            return Some(value);
+        for i in 0..K_STASH_BUCKET {
+            let current_stash_bucket = &*buckets_ptr.add(K_NUM_BUCKET + i);
+            if current_stash_bucket.check_and_get(meta_hash, &key, false, &mut value) {
+                return Some(value);
+            }
         }
         None
     }
@@ -329,9 +331,9 @@ mod tests {
     use crate::utils::hashing::calculate_hash;
     use crate::utils::pair::Key;
     use std::collections::HashSet;
-    use std::io;
     use std::io::Write;
-    use std::time::SystemTime;
+    use std::time::{Duration, SystemTime};
+    use std::{io, thread};
 
     #[test]
     pub fn test_new_table() {
@@ -451,12 +453,17 @@ mod tests {
         let mut stash_bucket = 0;
         let mut failed_count = 0;
         let mut inserted = HashSet::new();
+        let mut stash_inserted = HashSet::new();
         for i in 13000..14500 {
             let key = Key::new(i);
             let hash = calculate_hash(&key.key);
             let meta_hash = (hash & K_MASK) as u8;
             let value = value.clone();
             unsafe {
+                if i == 13890 {
+                    let bucket_index = bucket_index(hash, K_FINGER_BITS, BUCKET_MASK);
+                    println!("res {}", bucket_index);
+                }
                 let res = table.insert(key, value.into_bytes(), hash, meta_hash);
                 match &res {
                     Ok(ans) => match ans {
@@ -464,19 +471,28 @@ mod tests {
                         1 => neighbor_bucket += 1,
                         2 => next_neighbor_bucket += 1,
                         3 => prev_neighbor_bucket += 1,
-                        4 => stash_bucket += 1,
+                        4 => {
+                            stash_bucket += 1;
+                            stash_inserted.insert(i);
+                        }
                         _ => {
                             println!("Some other bucket")
                         }
                     },
                     Err(err) => {
                         failed_count += 1;
+                        println!("failed {}", i);
                     }
                 }
                 if res.is_ok() {
                     inserted.insert(i);
+                    println!("inserted {} {:?}", i, res);
                 }
             }
+            thread::sleep(Duration::new(0, 1000000));
+        }
+        for (i, item) in table.bucket.iter().enumerate(){
+            println!("{} : {:?}", i, &item);
         }
         println!("failed count for inserting is {}", failed_count);
         let mut not_found = 0;
@@ -499,6 +515,7 @@ mod tests {
         }
         let res = inserted.intersection(&failed);
         println!("Failed but inserted {:?}", res);
+        println!("Stash inserted {:?}", stash_inserted);
         println!("Total search failures are {}", not_found);
     }
 }
