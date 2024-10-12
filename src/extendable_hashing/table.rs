@@ -1,9 +1,8 @@
-use crate::extendable_hashing::bucket::{get_count, stash_insert, Bucket, K_NUM_PAIR_PER_BUCKET};
+use crate::extendable_hashing::bucket::{get_count, stash_insert, Bucket, BucketError, K_NUM_PAIR_PER_BUCKET};
 use crate::extendable_hashing::{BUCKET_MASK, K_FINGER_BITS, K_NUM_BUCKET, K_STASH_BUCKET};
 use crate::hash::ValueT;
 use crate::utils::pair::{Key, Pair};
 use std::fmt::Debug;
-use std::ops::{BitXor, Shr};
 use std::sync::{Arc, Mutex};
 use thiserror::Error;
 
@@ -67,7 +66,7 @@ impl<T: PartialEq + Debug + Clone> Table<T> {
             self.bucket[i].reset_lock();
         }
     }
-    pub unsafe fn insert(
+    pub fn insert(
         &mut self,
         key: Key<T>,
         value: ValueT,
@@ -77,152 +76,151 @@ impl<T: PartialEq + Debug + Clone> Table<T> {
         let bucket_index = bucket_index(key_hash, K_FINGER_BITS, BUCKET_MASK);
 
         let buckets_ptr = self.bucket.as_mut_ptr();
-        let target = &mut *buckets_ptr.add(bucket_index);
-        // (bucket_index + 1) & BUCKET_MASK used for wrapping up to 0 when the bucket_index is 63
-        // (63 + 1) & 63 = 64 & 63 = 0
-        let neighbor = &mut *buckets_ptr.add((bucket_index + 1) & BUCKET_MASK);
-        target.get_lock();
-        if !neighbor.try_get_lock() {
-            target.release_lock();
-            return Err(TableError::UnableToAcquireLock(
-                "Unable to acquire neighbor lock".to_string(),
-            ));
-        }
-        // let dir = directory;
-        // TODO: Check if we need to add the next block
-        // Trying to get the MSBs of the key to determine the segment index
-        // let segment_index = key_hash >> (8 * size_of::<usize>() - dir.global_depth);
-        // if dir.x[segment_index] != self {
-        //     target.release_lock();
-        //     neighbor.release_lock();
-        //     return Err(TableError::Internal);
-        // }
-        if !target.unique_check(meta_hash, &key, neighbor, &self.bucket[K_NUM_BUCKET..]) {
-            neighbor.release_lock();
-            target.release_lock();
-            return Err(TableError::KeyExists);
-        }
-        if get_count(target.bitmap) == K_NUM_PAIR_PER_BUCKET
-            && get_count(neighbor.bitmap) == K_NUM_PAIR_PER_BUCKET
-        {
-            // Both the buckets are full, We have to do the displacement
-            let next_neighbor = &mut *buckets_ptr.add((bucket_index + 2) & BUCKET_MASK);
-            if !next_neighbor.try_get_lock() {
-                neighbor.release_lock();
+        unsafe {
+            let target = &mut *buckets_ptr.add(bucket_index);
+            // (bucket_index + 1) & BUCKET_MASK used for wrapping up to 0 when the bucket_index is 63
+            // (63 + 1) & 63 = 64 & 63 = 0
+            let neighbor = &mut *buckets_ptr.add((bucket_index + 1) & BUCKET_MASK);
+            target.get_lock();
+            if !neighbor.try_get_lock() {
                 target.release_lock();
                 return Err(TableError::UnableToAcquireLock(
-                    "Unable to acquire the lock for next neighbor".to_string(),
+                    "Unable to acquire neighbor lock".to_string(),
                 ));
             }
+            // let dir = directory;
+            // TODO: Check if we need to add the next block
+            // Trying to get the MSBs of the key to determine the segment index
+            // let segment_index = key_hash >> (8 * size_of::<usize>() - dir.global_depth);
+            // if dir.x[segment_index] != self {
+            //     target.release_lock();
+            //     neighbor.release_lock();
+            //     return Err(TableError::Internal);
+            // }
+            if !target.unique_check(meta_hash, &key, neighbor, &self.bucket[K_NUM_BUCKET..]) {
+                neighbor.release_lock();
+                target.release_lock();
+                return Err(TableError::KeyExists);
+            }
+            if get_count(target.bitmap) == K_NUM_PAIR_PER_BUCKET
+                && get_count(neighbor.bitmap) == K_NUM_PAIR_PER_BUCKET
+            {
+                // Both the buckets are full, We have to do the displacement
+                let next_neighbor = &mut *buckets_ptr.add((bucket_index + 2) & BUCKET_MASK);
+                if !next_neighbor.try_get_lock() {
+                    neighbor.release_lock();
+                    target.release_lock();
+                    return Err(TableError::UnableToAcquireLock(
+                        "Unable to acquire the lock for next neighbor".to_string(),
+                    ));
+                }
 
-            let displacement_res = Self::next_displace(
-                neighbor,
-                next_neighbor,
-                key.clone(),
-                value.clone(),
-                meta_hash,
-            );
-            next_neighbor.release_lock();
-            if displacement_res {
-                // inserted in the neighboring bucket by displacement
-                target.release_lock();
-                neighbor.release_lock();
-                return Ok(2);
-            }
-            // Now we check for previous neighbor
-            let prev_index = if bucket_index == 0 {
-                K_NUM_BUCKET - 1
-            } else {
-                bucket_index - 1
-            };
-            let prev_neighbor = &mut *buckets_ptr.add(prev_index);
-            if !prev_neighbor.try_get_lock() {
-                target.release_lock();
-                neighbor.release_lock();
-                return Err(TableError::UnableToAcquireLock(
-                    "Unable to acquire the lock for previous neighbor".to_string(),
-                ));
-            }
+                let displacement_res = Self::next_displace(
+                    neighbor,
+                    next_neighbor,
+                    key.clone(),
+                    value.clone(),
+                    meta_hash,
+                );
+                next_neighbor.release_lock();
+                if displacement_res {
+                    // inserted in the neighboring bucket by displacement
+                    target.release_lock();
+                    neighbor.release_lock();
+                    return Ok(2);
+                }
+                // Now we check for previous neighbor
+                let prev_index = if bucket_index == 0 {
+                    K_NUM_BUCKET - 1
+                } else {
+                    bucket_index - 1
+                };
+                let prev_neighbor = &mut *buckets_ptr.add(prev_index);
+                if !prev_neighbor.try_get_lock() {
+                    target.release_lock();
+                    neighbor.release_lock();
+                    return Err(TableError::UnableToAcquireLock(
+                        "Unable to acquire the lock for previous neighbor".to_string(),
+                    ));
+                }
 
-            let displacement_res = Self::prev_displace(
-                target,
-                prev_neighbor,
-                key.clone(),
-                value.clone(),
-                meta_hash,
-            );
-            prev_neighbor.release_lock();
-            if displacement_res {
-                // inserted in the prev neighboring bucket by displacement
-                target.release_lock();
-                neighbor.release_lock();
-                return Ok(3);
-            }
+                let displacement_res =
+                    Self::prev_displace(target, prev_neighbor, key.clone(), value.clone(), meta_hash);
 
-            // Now we try to insert in the stash buckets
-            let stash_bucket = &mut *buckets_ptr.add(K_NUM_BUCKET);
-            if !stash_bucket.try_get_lock() {
+                prev_neighbor.release_lock();
+                if displacement_res {
+                    // inserted in the prev neighboring bucket by displacement
+                    target.release_lock();
+                    neighbor.release_lock();
+                    return Ok(3);
+                }
+
+                // Now we try to insert in the stash buckets
+                let stash_bucket = &mut *buckets_ptr.add(K_NUM_BUCKET);
+                if !stash_bucket.try_get_lock() {
+                    target.release_lock();
+                    neighbor.release_lock();
+                    return Err(TableError::UnableToAcquireLock(
+                        "Unable to acquire the lock for stash bucket".to_string(),
+                    ));
+                }
+                let mut stash_buckets: Vec<&mut Bucket<T>> = vec![];
+                for i in 0..K_STASH_BUCKET {
+                    stash_buckets.push(&mut *buckets_ptr.add(K_NUM_BUCKET + i));
+                }
+                let stash_insert_res = stash_insert(
+                    stash_buckets,
+                    target,
+                    neighbor,
+                    key.clone(),
+                    value.clone(),
+                    meta_hash,
+                );
+                stash_bucket.release_lock();
                 target.release_lock();
                 neighbor.release_lock();
-                return Err(TableError::UnableToAcquireLock(
-                    "Unable to acquire the lock for stash bucket".to_string(),
-                ));
-            }
-            let mut stash_buckets: Vec<&mut Bucket<T>> = vec![];
-            for i in 0..K_STASH_BUCKET {
-                stash_buckets.push(&mut *buckets_ptr.add(K_NUM_BUCKET + i));
-            }
-            let stash_insert_res = stash_insert(
-                stash_buckets,
-                target,
-                neighbor,
-                key.clone(),
-                value.clone(),
-                meta_hash,
-            );
-            stash_bucket.release_lock();
-            target.release_lock();
-            neighbor.release_lock();
-            if stash_insert_res {
-                Ok(4)
-            } else {
-                Err(TableError::UnableToInsertKey)
-            }
-        } else {
-            // Insert in the bucket which has lesser keys
-            if get_count(target.bitmap) <= get_count(neighbor.bitmap) {
-                match target.insert(key.clone(), value.clone(), meta_hash, false) {
-                    Ok(_) => {
-                        target.release_lock();
-                        neighbor.release_lock();
-                        Ok(0)
-                    }
-                    Err(error) => {
-                        target.release_lock();
-                        neighbor.release_lock();
-                        println!("Error while inserting the key in target bucket {:?}", error);
-                        Err(TableError::UnableToInsertKey)
-                    }
+                if stash_insert_res {
+                    Ok(4)
+                } else {
+                    Err(TableError::UnableToInsertKey)
                 }
             } else {
-                match neighbor.insert(key.clone(), value.clone(), meta_hash, true) {
-                    Ok(_) => {
-                        target.release_lock();
-                        neighbor.release_lock();
-                        Ok(1)
+                // Insert in the bucket which has lesser keys
+                if get_count(target.bitmap) <= get_count(neighbor.bitmap) {
+                    match target.insert(key.clone(), value.clone(), meta_hash, false) {
+                        Ok(_) => {
+                            target.release_lock();
+                            neighbor.release_lock();
+                            Ok(0)
+                        }
+                        Err(error) => {
+                            target.release_lock();
+                            neighbor.release_lock();
+                            println!("Error while inserting the key in target bucket {:?}", error);
+                            Err(TableError::UnableToInsertKey)
+                        }
                     }
-                    Err(error) => {
-                        target.release_lock();
-                        neighbor.release_lock();
-                        println!(
-                            "Error while inserting the key in neighbor bucket {:?}",
-                            error
-                        );
-                        Err(TableError::UnableToInsertKey)
+                } else {
+                    match neighbor.insert(key.clone(), value.clone(), meta_hash, true) {
+                        Ok(_) => {
+                            target.release_lock();
+                            neighbor.release_lock();
+                            Ok(1)
+                        }
+                        Err(error) => {
+                            target.release_lock();
+                            neighbor.release_lock();
+                            println!(
+                                "Error while inserting the key in neighbor bucket {:?}",
+                                error
+                            );
+                            Err(TableError::UnableToInsertKey)
+                        }
                     }
                 }
             }
         }
+
     }
     /**
     Takes a reference Bucket, and it's neighbor, Moves one eligible pair to it's neighbor bucket.
@@ -294,27 +292,84 @@ impl<T: PartialEq + Debug + Clone> Table<T> {
         false
     }
 
-    pub unsafe fn search(&mut self, key: Key<T>, key_hash: usize, meta_hash: u8) -> Option<ValueT> {
+    pub fn search(&mut self, key: Key<T>, key_hash: usize, meta_hash: u8) -> Option<ValueT> {
         let bucket_index = bucket_index(key_hash, K_FINGER_BITS, BUCKET_MASK);
 
         let buckets_ptr = self.bucket.as_mut_ptr();
-        let target = &*buckets_ptr.add(bucket_index);
+        unsafe {
+            let target = &*buckets_ptr.add(bucket_index);
 
-        let mut value: ValueT = vec![];
-        if target.check_and_get(meta_hash, &key, false, &mut value) {
-            return Some(value);
-        }
-        let neighbor = &*buckets_ptr.add((bucket_index + 1) & BUCKET_MASK);
-        if neighbor.check_and_get(meta_hash, &key, true, &mut value) {
-            return Some(value);
-        }
-        for i in 0..K_STASH_BUCKET {
-            let current_stash_bucket = &*buckets_ptr.add(K_NUM_BUCKET + i);
-            if current_stash_bucket.check_and_get(meta_hash, &key, false, &mut value) {
+            let mut value: ValueT = vec![];
+            if target.check_and_get(meta_hash, &key, false, &mut value) {
                 return Some(value);
+            }
+            let neighbor = &*buckets_ptr.add((bucket_index + 1) & BUCKET_MASK);
+            if neighbor.check_and_get(meta_hash, &key, true, &mut value) {
+                return Some(value);
+            }
+            for i in 0..K_STASH_BUCKET {
+                let current_stash_bucket = &*buckets_ptr.add(K_NUM_BUCKET + i);
+                if current_stash_bucket.check_and_get(meta_hash, &key, false, &mut value) {
+                    return Some(value);
+                }
             }
         }
         None
+    }
+
+    pub fn delete(&mut self, key: &Key<T>, key_hash: usize, meta_hash: u8) -> Result<(), BucketError>{
+        let bucket_index = bucket_index(key_hash, K_FINGER_BITS, BUCKET_MASK);
+
+        let buckets_ptr = self.bucket.as_mut_ptr();
+        unsafe {
+            let target = &mut *buckets_ptr.add(bucket_index);
+
+            match target.delete(key, meta_hash, false) {
+                Ok(_) => {
+                    return Ok(());
+                }
+                Err(err) => {
+                    match err {
+                        BucketError::KeyDoesNotExist => {},
+                        _ => {
+                            return Err(err);
+                        }
+                    }
+                }
+            };
+            let neighbor = &mut *buckets_ptr.add((bucket_index + 1) & BUCKET_MASK);
+
+            match neighbor.delete(key, meta_hash, true) {
+                Ok(_) => {
+                    return Ok(());
+                }
+                Err(err) => {
+                    match err {
+                        BucketError::KeyDoesNotExist => {},
+                        _ => {
+                            return Err(err);
+                        }
+                    }
+                }
+            };
+            for i in 0..K_STASH_BUCKET {
+                let current_stash_bucket = &mut *buckets_ptr.add(K_NUM_BUCKET + i);
+                match current_stash_bucket.delete(&key, meta_hash, false) {
+                    Ok(_) => {
+                        return Ok(());
+                    }
+                    Err(err) => {
+                        match err {
+                            BucketError::KeyDoesNotExist => {},
+                            _ => {
+                                return Err(err);
+                            }
+                        }
+                    }
+                };
+            }
+        }
+        Err(BucketError::KeyDoesNotExist)
     }
 }
 pub fn bucket_index(hash: usize, finger_bits: usize, bucket_mask: usize) -> usize {
@@ -331,9 +386,9 @@ mod tests {
     use crate::utils::hashing::calculate_hash;
     use crate::utils::pair::Key;
     use std::collections::HashSet;
+    use std::io;
     use std::io::Write;
-    use std::time::{Duration, SystemTime};
-    use std::{io, thread};
+    use std::time::SystemTime;
 
     #[test]
     pub fn test_new_table() {
@@ -459,11 +514,7 @@ mod tests {
             let hash = calculate_hash(&key.key);
             let meta_hash = (hash & K_MASK) as u8;
             let value = value.clone();
-            unsafe {
-                if i == 13890 {
-                    let bucket_index = bucket_index(hash, K_FINGER_BITS, BUCKET_MASK);
-                    println!("res {}", bucket_index);
-                }
+
                 let res = table.insert(key, value.into_bytes(), hash, meta_hash);
                 match &res {
                     Ok(ans) => match ans {
@@ -488,10 +539,8 @@ mod tests {
                     inserted.insert(i);
                     println!("inserted {} {:?}", i, res);
                 }
-            }
-            thread::sleep(Duration::new(0, 1000000));
         }
-        for (i, item) in table.bucket.iter().enumerate(){
+        for (i, item) in table.bucket.iter().enumerate() {
             println!("{} : {:?}", i, &item);
         }
         println!("failed count for inserting is {}", failed_count);
@@ -517,5 +566,54 @@ mod tests {
         println!("Failed but inserted {:?}", res);
         println!("Stash inserted {:?}", stash_inserted);
         println!("Total search failures are {}", not_found);
+    }
+
+    #[test]
+    pub fn test_delete_for_all_buckets(){
+        let mut table = Table::<i32>::new();
+        let value = String::from("Hello World");
+        let mut inserted = Vec::new();
+        for i in 13000..14500 {
+            let key = Key::new(i);
+            let hash = calculate_hash(&key.key);
+            let meta_hash = (hash & K_MASK) as u8;
+            let value = value.clone();
+
+            let res = table.insert(key, value.into_bytes(), hash, meta_hash);
+            match &res {
+                Ok(_) => {
+                    inserted.push(i);
+                },
+                Err(err) => {
+
+                    // println!("failed {}", i);
+                }
+            }
+        }
+
+        for i in 0..inserted.len() / 2{
+            let key = Key::new(inserted[i]);
+            let hash = calculate_hash(&key.key);
+            let meta_hash = (hash & K_MASK) as u8;
+            table.delete(&key, hash, meta_hash).unwrap();
+        }
+
+        let mut failed = 0;
+        for i in 13000..14500 {
+            let key = Key::new(i);
+            let hash = calculate_hash(&key.key);
+            let meta_hash = (hash & K_MASK) as u8;
+            unsafe {
+                match table.search(key, hash, meta_hash) {
+                    None => {
+                        failed += 1;
+                    }
+                    Some(_) => {
+                        // println!("Item found for key {} value: {:?}", i, value);
+                    }
+                }
+            }
+        }
+        assert_eq!(failed, inserted.len() / 2);
     }
 }

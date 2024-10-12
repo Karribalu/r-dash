@@ -26,7 +26,7 @@ pub struct Bucket<T: PartialEq> {
     pub overflow_count: u8,
     pub overflow_member: u8,
     pub overflow_index: u8,
-    pub overflow_bitmap: u8,
+    pub overflow_bitmap: u8, // Overflow member is used to identify if any items stored in this stash bucket from the target bucket
     pub finger_array: [u8; 18], /*only use the first 14 bytes, can be accelerated by SSE instruction,0-13 for finger, 14-17 for overflowed*/
     pub bitmap: u32,            // allocation bitmap + pointer bitmap + counter
     pub version_lock: Arc<AtomicU32>,
@@ -45,7 +45,7 @@ In the above example 5 slots are filled
 impl<T: Debug + Clone + PartialEq> Bucket<T> {
     pub fn new() -> Self {
         Bucket {
-            pairs: vec![None; 18],
+            pairs: vec![None; K_NUM_PAIR_PER_BUCKET as usize],
             unused: [0, 0],
             overflow_count: 0,
             overflow_member: 0,
@@ -134,8 +134,8 @@ impl<T: Debug + Clone + PartialEq> Bucket<T> {
     }
 
     /**
-    This function is used to look for open slots in stash_buckets of the probing bucket
-    If there is an available slot then uses it or else it does the exact search in the neighbor bucket
+    This function is used to look for open slots in stash_buckets of the target bucket
+    If there is an available slot then uses it or else it does the exact search in the probing (neighbor) bucket
     */
     pub fn set_indicator(&mut self, meta_hash: u8, neighbor: &mut Bucket<T>, pos: u8) {
         let mut mask: u8 = self.overflow_bitmap & OVERFLOW_BITMAP_MASK;
@@ -354,7 +354,7 @@ impl<T: Debug + Clone + PartialEq> Bucket<T> {
         self.pairs[slot as usize] = Some(Pair::new(key, value));
         self.set_hash(slot, meta_hash, probe);
     }
-    pub fn delete(&mut self, key: Key<T>, meta_hash: u8, probe: bool) -> Result<(), BucketError> {
+    pub fn delete(&mut self, key: &Key<T>, meta_hash: u8, probe: bool) -> Result<(), BucketError> {
         /*do the simd and check the key, then do the delete operation*/
         let mut mask: u32 = 0;
         // TODO: Can be replaced by a simd operation
@@ -458,7 +458,7 @@ impl<T: Debug + Clone + PartialEq> Bucket<T> {
                 return Ok(());
             }
         }
-        Err(BucketError::ItemDoesntExist)
+        Err(BucketError::KeyDoesNotExist)
     }
     pub fn unique_check(
         &self,
@@ -550,7 +550,7 @@ pub enum BucketError {
     #[error("Internal Error")]
     Internal,
     #[error("Item does not exist")]
-    ItemDoesntExist,
+    KeyDoesNotExist,
 }
 
 /**
@@ -618,7 +618,6 @@ pub fn stash_insert<T: Debug + Clone + PartialEq>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::extendable_hashing::K_MASK;
     use crate::utils::hashing::calculate_hash;
     use std::ops::AddAssign;
     use std::thread;
@@ -697,7 +696,7 @@ mod tests {
         }
         let hash = calculate_hash(&ans[5]);
         let key: Key<i32> = Key::new(ans[5]);
-        let delete = bucket.delete(key, hash as u8, false);
+        let delete = bucket.delete(&key, hash as u8, false);
         match delete {
             Ok(_) => {
                 println!("found the key to delete {:?}", ans);
@@ -719,7 +718,7 @@ mod tests {
             }
         }
         let key: Key<i32> = Key::new(ans[5]);
-        let delete = bucket.delete(key, meta_hash(hash), false);
+        let delete = bucket.delete(&key, meta_hash(hash), false);
         match delete {
             Ok(_) => {
                 println!("found the key to delete {:?}", ans);
