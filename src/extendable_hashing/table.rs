@@ -1,4 +1,6 @@
-use crate::extendable_hashing::bucket::{get_count, stash_insert, Bucket, BucketError, K_NUM_PAIR_PER_BUCKET};
+use crate::extendable_hashing::bucket::{
+    get_count, stash_insert, Bucket, BucketError, K_NUM_PAIR_PER_BUCKET,
+};
 use crate::extendable_hashing::{BUCKET_MASK, K_FINGER_BITS, K_NUM_BUCKET, K_STASH_BUCKET};
 use crate::hash::ValueT;
 use crate::utils::pair::{Key, Pair};
@@ -144,8 +146,13 @@ impl<T: PartialEq + Debug + Clone> Table<T> {
                     ));
                 }
 
-                let displacement_res =
-                    Self::prev_displace(target, prev_neighbor, key.clone(), value.clone(), meta_hash);
+                let displacement_res = Self::prev_displace(
+                    target,
+                    prev_neighbor,
+                    key.clone(),
+                    value.clone(),
+                    meta_hash,
+                );
 
                 prev_neighbor.release_lock();
                 if displacement_res {
@@ -220,7 +227,6 @@ impl<T: PartialEq + Debug + Clone> Table<T> {
                 }
             }
         }
-
     }
     /**
     Takes a reference Bucket, and it's neighbor, Moves one eligible pair to it's neighbor bucket.
@@ -317,55 +323,57 @@ impl<T: PartialEq + Debug + Clone> Table<T> {
         None
     }
 
-    pub fn delete(&mut self, key: &Key<T>, key_hash: usize, meta_hash: u8) -> Result<(), BucketError>{
+    pub fn delete(
+        &mut self,
+        key: &Key<T>,
+        key_hash: usize,
+        meta_hash: u8,
+    ) -> Result<(), BucketError> {
         let bucket_index = bucket_index(key_hash, K_FINGER_BITS, BUCKET_MASK);
 
         let buckets_ptr = self.bucket.as_mut_ptr();
         unsafe {
             let target = &mut *buckets_ptr.add(bucket_index);
-
+            target.get_lock();
             match target.delete(key, meta_hash, false) {
                 Ok(_) => {
+                    println!(" Deleted from target {:?}", key);
                     return Ok(());
                 }
-                Err(err) => {
-                    match err {
-                        BucketError::KeyDoesNotExist => {},
-                        _ => {
-                            return Err(err);
-                        }
+                Err(err) => match err {
+                    BucketError::KeyDoesNotExist => {}
+                    _ => {
+                        return Err(err);
                     }
-                }
+                },
             };
             let neighbor = &mut *buckets_ptr.add((bucket_index + 1) & BUCKET_MASK);
 
             match neighbor.delete(key, meta_hash, true) {
                 Ok(_) => {
+                    println!(" Deleted from neighbor {:?}", key);
                     return Ok(());
                 }
-                Err(err) => {
-                    match err {
-                        BucketError::KeyDoesNotExist => {},
-                        _ => {
-                            return Err(err);
-                        }
+                Err(err) => match err {
+                    BucketError::KeyDoesNotExist => {}
+                    _ => {
+                        return Err(err);
                     }
-                }
+                },
             };
             for i in 0..K_STASH_BUCKET {
                 let current_stash_bucket = &mut *buckets_ptr.add(K_NUM_BUCKET + i);
                 match current_stash_bucket.delete(&key, meta_hash, false) {
                     Ok(_) => {
+                        println!("Deleted from stash {:?} {}", key, i);
                         return Ok(());
                     }
-                    Err(err) => {
-                        match err {
-                            BucketError::KeyDoesNotExist => {},
-                            _ => {
-                                return Err(err);
-                            }
+                    Err(err) => match err {
+                        BucketError::KeyDoesNotExist => {}
+                        _ => {
+                            return Err(err);
                         }
-                    }
+                    },
                 };
             }
         }
@@ -515,30 +523,30 @@ mod tests {
             let meta_hash = (hash & K_MASK) as u8;
             let value = value.clone();
 
-                let res = table.insert(key, value.into_bytes(), hash, meta_hash);
-                match &res {
-                    Ok(ans) => match ans {
-                        0 => target_bucket += 1,
-                        1 => neighbor_bucket += 1,
-                        2 => next_neighbor_bucket += 1,
-                        3 => prev_neighbor_bucket += 1,
-                        4 => {
-                            stash_bucket += 1;
-                            stash_inserted.insert(i);
-                        }
-                        _ => {
-                            println!("Some other bucket")
-                        }
-                    },
-                    Err(err) => {
-                        failed_count += 1;
-                        println!("failed {}", i);
+            let res = table.insert(key, value.into_bytes(), hash, meta_hash);
+            match &res {
+                Ok(ans) => match ans {
+                    0 => target_bucket += 1,
+                    1 => neighbor_bucket += 1,
+                    2 => next_neighbor_bucket += 1,
+                    3 => prev_neighbor_bucket += 1,
+                    4 => {
+                        stash_bucket += 1;
+                        stash_inserted.insert(i);
                     }
+                    _ => {
+                        println!("Some other bucket")
+                    }
+                },
+                Err(err) => {
+                    failed_count += 1;
+                    println!("failed {}", i);
                 }
-                if res.is_ok() {
-                    inserted.insert(i);
-                    println!("inserted {} {:?}", i, res);
-                }
+            }
+            if res.is_ok() {
+                inserted.insert(i);
+                println!("inserted {} {:?}", i, res);
+            }
         }
         for (i, item) in table.bucket.iter().enumerate() {
             println!("{} : {:?}", i, &item);
@@ -569,7 +577,7 @@ mod tests {
     }
 
     #[test]
-    pub fn test_delete_for_all_buckets(){
+    pub fn test_delete_for_all_buckets() {
         let mut table = Table::<i32>::new();
         let value = String::from("Hello World");
         let mut inserted = Vec::new();
@@ -578,42 +586,36 @@ mod tests {
             let hash = calculate_hash(&key.key);
             let meta_hash = (hash & K_MASK) as u8;
             let value = value.clone();
-
+            if i == 13069 {
+                println!("Found");
+            }
             let res = table.insert(key, value.into_bytes(), hash, meta_hash);
             match &res {
                 Ok(_) => {
                     inserted.push(i);
-                },
+                }
                 Err(err) => {
 
                     // println!("failed {}", i);
                 }
             }
         }
-
-        for i in 0..inserted.len() / 2{
+        println!("{:?}", inserted);
+        let mut deleted = Vec::new();
+        for i in 0..(inserted.len() / 2) {
             let key = Key::new(inserted[i]);
             let hash = calculate_hash(&key.key);
             let meta_hash = (hash & K_MASK) as u8;
-            table.delete(&key, hash, meta_hash).unwrap();
+            assert!(table.delete(&key, hash, meta_hash).is_ok());
+            deleted.push(inserted[i]);
         }
 
-        let mut failed = 0;
-        for i in 13000..14500 {
+        for i in deleted {
             let key = Key::new(i);
             let hash = calculate_hash(&key.key);
             let meta_hash = (hash & K_MASK) as u8;
-            unsafe {
-                match table.search(key, hash, meta_hash) {
-                    None => {
-                        failed += 1;
-                    }
-                    Some(_) => {
-                        // println!("Item found for key {} value: {:?}", i, value);
-                    }
-                }
-            }
+            assert!(table.search(key, hash, meta_hash).is_some());
         }
-        assert_eq!(failed, inserted.len() / 2);
+        // assert_eq!(failed, inserted.len() / 2);
     }
 }

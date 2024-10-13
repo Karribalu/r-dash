@@ -371,7 +371,7 @@ impl<T: Debug + Clone + PartialEq> Bucket<T> {
         }
         if key.is_pointer {
             if mask != 0 {
-                for i in (0..14).step_by(4) {
+                for i in 0..14 {
                     let iu = i as usize;
                     if check_bit_32(mask, i)
                         && self.pairs[iu].clone().unwrap().key.pointed_key == key.pointed_key
@@ -380,82 +380,18 @@ impl<T: Debug + Clone + PartialEq> Bucket<T> {
                         self.pairs[iu] = None;
                         return Ok(());
                     }
-                    if check_bit_32(mask, i + 1)
-                        && self.pairs[iu + 1].clone().unwrap().key.pointed_key == key.pointed_key
-                    {
-                        self.unset_hash(i);
-                        self.pairs[iu] = None;
-                        return Ok(());
-                    }
-                    if check_bit_32(mask, i + 2)
-                        && self.pairs[iu + 2].clone().unwrap().key.pointed_key == key.pointed_key
-                    {
-                        self.unset_hash(i);
-                        self.pairs[iu] = None;
-                        return Ok(());
-                    }
-                    if check_bit_32(mask, i + 3)
-                        && self.pairs[iu + 3].clone().unwrap().key.pointed_key == key.pointed_key
-                    {
-                        self.unset_hash(i);
-                        self.pairs[iu] = None;
-                        return Ok(());
-                    }
-                }
-                if check_bit_32(mask, 12)
-                    && self.pairs[12].clone().unwrap().key.pointed_key == key.pointed_key
-                {
-                    self.unset_hash(12);
-                    self.pairs[12] = None;
-                    return Ok(());
-                }
-                if check_bit_32(mask, 13)
-                    && self.pairs[13].clone().unwrap().key.pointed_key == key.pointed_key
-                {
-                    self.unset_hash(13);
-                    self.pairs[13] = None;
-                    return Ok(());
                 }
             }
         } else {
-            for i in (0..12).step_by(4) {
-                let iu = i as usize;
-                if check_bit_32(mask, i) && self.pairs[iu].clone().unwrap().key.key == key.key {
-                    self.unset_hash(i);
-                    self.pairs[iu] = None;
-                    return Ok(());
+            if mask != 0 {
+                for i in 0..14 {
+                    let iu = i as usize;
+                    if check_bit_32(mask, i) && self.pairs[iu].clone().unwrap().key.key == key.key {
+                        self.unset_hash(i);
+                        self.pairs[iu] = None;
+                        return Ok(());
+                    }
                 }
-                if check_bit_32(mask, i + 1)
-                    && self.pairs[iu + 1].clone().unwrap().key.key == key.key
-                {
-                    self.unset_hash(i + 1);
-                    self.pairs[iu + 1] = None;
-                    return Ok(());
-                }
-                if check_bit_32(mask, i + 2)
-                    && self.pairs[iu + 2].clone().unwrap().key.key == key.key
-                {
-                    self.unset_hash(i + 1);
-                    self.pairs[iu + 1] = None;
-                    return Ok(());
-                }
-                if check_bit_32(mask, i + 3)
-                    && self.pairs[iu + 3].clone().unwrap().key.key == key.key
-                {
-                    self.unset_hash(i + 1);
-                    self.pairs[iu + 1] = None;
-                    return Ok(());
-                }
-            }
-            if check_bit_32(mask, 12) && self.pairs[12].clone().unwrap().key.key == key.key {
-                self.unset_hash(12);
-                self.pairs[12] = None;
-                return Ok(());
-            }
-            if check_bit_32(mask, 13) && self.pairs[13].clone().unwrap().key.key == key.key {
-                self.unset_hash(13);
-                self.pairs[13] = None;
-                return Ok(());
             }
         }
         Err(BucketError::KeyDoesNotExist)
