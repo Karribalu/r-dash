@@ -298,7 +298,7 @@ impl<T: PartialEq + Debug + Clone> Table<T> {
         false
     }
 
-    pub fn search(&mut self, key: Key<T>, key_hash: usize, meta_hash: u8) -> Option<ValueT> {
+    pub fn search(&mut self, key: &Key<T>, key_hash: usize, meta_hash: u8) -> Option<ValueT> {
         let bucket_index = bucket_index(key_hash, K_FINGER_BITS, BUCKET_MASK);
 
         let buckets_ptr = self.bucket.as_mut_ptr();
@@ -306,16 +306,16 @@ impl<T: PartialEq + Debug + Clone> Table<T> {
             let target = &*buckets_ptr.add(bucket_index);
 
             let mut value: ValueT = vec![];
-            if target.check_and_get(meta_hash, &key, false, &mut value) {
+            if target.check_and_get(meta_hash, key, false, &mut value) {
                 return Some(value);
             }
             let neighbor = &*buckets_ptr.add((bucket_index + 1) & BUCKET_MASK);
-            if neighbor.check_and_get(meta_hash, &key, true, &mut value) {
+            if neighbor.check_and_get(meta_hash, key, true, &mut value) {
                 return Some(value);
             }
             for i in 0..K_STASH_BUCKET {
                 let current_stash_bucket = &*buckets_ptr.add(K_NUM_BUCKET + i);
-                if current_stash_bucket.check_and_get(meta_hash, &key, false, &mut value) {
+                if current_stash_bucket.check_and_get(meta_hash, key, false, &mut value) {
                     return Some(value);
                 }
             }
@@ -337,44 +337,51 @@ impl<T: PartialEq + Debug + Clone> Table<T> {
             target.get_lock();
             match target.delete(key, meta_hash, false) {
                 Ok(_) => {
-                    println!(" Deleted from target {:?}", key);
+                    target.release_lock();
                     return Ok(());
                 }
                 Err(err) => match err {
                     BucketError::KeyDoesNotExist => {}
                     _ => {
+                        target.release_lock();
                         return Err(err);
                     }
                 },
             };
+            target.release_lock();
             let neighbor = &mut *buckets_ptr.add((bucket_index + 1) & BUCKET_MASK);
-
+            neighbor.get_lock();
             match neighbor.delete(key, meta_hash, true) {
                 Ok(_) => {
-                    println!(" Deleted from neighbor {:?}", key);
+                    neighbor.release_lock();
                     return Ok(());
                 }
                 Err(err) => match err {
                     BucketError::KeyDoesNotExist => {}
                     _ => {
+                        neighbor.release_lock();
                         return Err(err);
                     }
                 },
             };
+            neighbor.release_lock();
             for i in 0..K_STASH_BUCKET {
                 let current_stash_bucket = &mut *buckets_ptr.add(K_NUM_BUCKET + i);
+                current_stash_bucket.get_lock();
                 match current_stash_bucket.delete(&key, meta_hash, false) {
                     Ok(_) => {
-                        println!("Deleted from stash {:?} {}", key, i);
+                        current_stash_bucket.release_lock();
                         return Ok(());
                     }
                     Err(err) => match err {
                         BucketError::KeyDoesNotExist => {}
                         _ => {
+                            current_stash_bucket.release_lock();
                             return Err(err);
                         }
                     },
                 };
+                current_stash_bucket.release_lock();
             }
         }
         Err(BucketError::KeyDoesNotExist)
@@ -559,7 +566,7 @@ mod tests {
             let hash = calculate_hash(&key.key);
             let meta_hash = (hash & K_MASK) as u8;
             unsafe {
-                match table.search(key, hash, meta_hash) {
+                match table.search(&key, hash, meta_hash) {
                     None => {
                         failed.insert(i);
                         not_found += 1;
@@ -586,9 +593,6 @@ mod tests {
             let hash = calculate_hash(&key.key);
             let meta_hash = (hash & K_MASK) as u8;
             let value = value.clone();
-            if i == 13069 {
-                println!("Found");
-            }
             let res = table.insert(key, value.into_bytes(), hash, meta_hash);
             match &res {
                 Ok(_) => {
@@ -600,22 +604,26 @@ mod tests {
                 }
             }
         }
-        println!("{:?}", inserted);
-        let mut deleted = Vec::new();
         for i in 0..(inserted.len() / 2) {
             let key = Key::new(inserted[i]);
             let hash = calculate_hash(&key.key);
             let meta_hash = (hash & K_MASK) as u8;
             assert!(table.delete(&key, hash, meta_hash).is_ok());
-            deleted.push(inserted[i]);
+            assert!(table.search(&key, hash, meta_hash).is_none());
         }
-
-        for i in deleted {
-            let key = Key::new(i);
+        for i in (inserted.len() / 2)..inserted.len() {
+            let key = Key::new(inserted[i]);
             let hash = calculate_hash(&key.key);
             let meta_hash = (hash & K_MASK) as u8;
-            assert!(table.search(key, hash, meta_hash).is_some());
+            assert!(table.search(&key, hash, meta_hash).is_some());
         }
+
+        // for i in deleted {
+        //     let key = Key::new(i);
+        //     let hash = calculate_hash(&key.key);
+        //     let meta_hash = (hash & K_MASK) as u8;
+        //     assert!(table.search(&key, hash, meta_hash).is_some());
+        // }
         // assert_eq!(failed, inserted.len() / 2);
     }
 }

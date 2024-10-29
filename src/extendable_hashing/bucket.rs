@@ -307,38 +307,12 @@ impl<T: Debug + Clone + PartialEq> Bucket<T> {
             }
         } else {
             // Fixed length keys
-            for i in (0..14).step_by(4) {
+            for i in 0..14 {
                 let iu = i as usize;
                 if check_bit_32(mask, i) && self.pairs[iu].clone().unwrap().key.key == key.key {
                     *value = self.pairs[iu].clone().unwrap().value;
                     return true;
                 }
-                if check_bit_32(mask, i + 1)
-                    && self.pairs[iu + 1].clone().unwrap().key.key == key.key
-                {
-                    *value = self.pairs[iu + 1].clone().unwrap().value;
-                    return true;
-                }
-                if check_bit_32(mask, i + 2)
-                    && self.pairs[iu + 2].clone().unwrap().key.key == key.key
-                {
-                    *value = self.pairs[iu + 2].clone().unwrap().value;
-                    return true;
-                }
-                if check_bit_32(mask, i + 3)
-                    && self.pairs[iu + 3].clone().unwrap().key.key == key.key
-                {
-                    *value = self.pairs[iu + 3].clone().unwrap().value;
-                    return true;
-                }
-            }
-            if check_bit_32(mask, 12) && self.pairs[12].clone().unwrap().key.key == key.key {
-                *value = self.pairs[12].clone().unwrap().value;
-                return true;
-            }
-            if check_bit_32(mask, 13) && self.pairs[13].clone().unwrap().key.key == key.key {
-                *value = self.pairs[13].clone().unwrap().value;
-                return true;
             }
         }
         false
@@ -537,7 +511,6 @@ pub fn stash_insert<T: Debug + Clone + PartialEq>(
             return match stash_bucket.insert(key, value, meta_hash, false) {
                 Ok(_) => {
                     target.set_indicator(meta_hash, neighbor, index);
-                    println!("Added the pair to the stash bucket");
                     true
                 }
                 Err(e) => {
@@ -669,14 +642,14 @@ mod tests {
         let mut bucket: Bucket<String> = Bucket::new();
         let mut success = 0;
         let mut ans: Vec<String> = vec![];
-        for i in 10000..10020 {
+        for i in 10000..10015 {
             let key = String::from(format!("let hash = calculate_hash(&key) {}", i));
             let mut string = String::from(format!("let hash = calculate_hash(&key) {}", i));
             let value: ValueT = string.clone().into_bytes();
 
             let hash = calculate_hash(&key);
             let key = Key::new(key);
-            let response = bucket.insert(key, value, meta_hash(hash), true);
+            let response = bucket.insert(key, value, meta_hash(hash), false);
             match response {
                 Ok(slot) => {
                     let key = String::from(format!("let hash = calculate_hash(&key) {}", i));
@@ -691,21 +664,53 @@ mod tests {
             "let hash = calculate_hash(&key) {}",
             500
         )));
-        for key_str in ans {
+        for (idx, key_str) in ans.iter().enumerate() {
             let mut vector = vec![];
             let cloned_key = key_str.clone();
             let hash = calculate_hash(&key_str);
-            let key = Key::new(key_str);
+            let key = Key::new(key_str.clone());
             let start = Instant::now();
             // Calculate the elapsed time
-
-            if bucket.check_and_get(meta_hash(hash), &key, false, &mut vector) {
-                println!("found the key {:?}", vector);
-            } else {
-                println!("Didn't found the key {}", cloned_key);
+            if idx == ans.len() - 1 {
+                // Asserting the negative case
+                assert_eq!(bucket.check_and_get(meta_hash(hash), &key, false, &mut vector), false);
+            }else{
+                // Asserting positive case
+                assert_eq!(bucket.check_and_get(meta_hash(hash), &key, false, &mut vector), true);
             }
-            let duration = start.elapsed();
-            println!("it took so time {:?}", duration);
+        }
+    }
+
+    #[test]
+    fn test_bucket_deletion_with_fixed_keys() {
+        let mut bucket: Bucket<String> = Bucket::new();
+        let mut success = 0;
+        let mut ans: Vec<String> = vec![];
+        for i in 10000..10020 {
+            let key = String::from(format!("let hash = calculate_hash(&key) {}", i));
+            let mut string = String::from(format!("let hash = calculate_hash(&key) {}", i));
+            let value: ValueT = string.clone().into_bytes();
+
+            let hash = calculate_hash(&key);
+            let key = Key::new(key);
+            let response = bucket.insert(key, value, meta_hash(hash), false);
+            match response {
+                Ok(slot) => {
+                    let key = String::from(format!("let hash = calculate_hash(&key) {}", i));
+                    println!("The key {} is inserted at {}", key, slot);
+                    success += 1;
+                    ans.push(key);
+                }
+                Err(_) => {}
+            }
+        }
+        for key in ans {
+            let mut vector = vec![];
+            let hash = calculate_hash(&key);
+            let key = Key::new(key);
+            assert_eq!(bucket.check_and_get(meta_hash(hash), &key, false, &mut vector), true);
+            assert_eq!(bucket.delete(&key, meta_hash(hash), false).is_ok(), true);
+            assert_eq!(bucket.check_and_get(meta_hash(hash), &key, false, &mut vector), false);
         }
     }
 }
