@@ -673,10 +673,16 @@ mod tests {
             // Calculate the elapsed time
             if idx == ans.len() - 1 {
                 // Asserting the negative case
-                assert_eq!(bucket.check_and_get(meta_hash(hash), &key, false, &mut vector), false);
-            }else{
+                assert_eq!(
+                    bucket.check_and_get(meta_hash(hash), &key, false, &mut vector),
+                    false
+                );
+            } else {
                 // Asserting positive case
-                assert_eq!(bucket.check_and_get(meta_hash(hash), &key, false, &mut vector), true);
+                assert_eq!(
+                    bucket.check_and_get(meta_hash(hash), &key, false, &mut vector),
+                    true
+                );
             }
         }
     }
@@ -708,9 +714,15 @@ mod tests {
             let mut vector = vec![];
             let hash = calculate_hash(&key);
             let key = Key::new(key);
-            assert_eq!(bucket.check_and_get(meta_hash(hash), &key, false, &mut vector), true);
+            assert_eq!(
+                bucket.check_and_get(meta_hash(hash), &key, false, &mut vector),
+                true
+            );
             assert_eq!(bucket.delete(&key, meta_hash(hash), false).is_ok(), true);
-            assert_eq!(bucket.check_and_get(meta_hash(hash), &key, false, &mut vector), false);
+            assert_eq!(
+                bucket.check_and_get(meta_hash(hash), &key, false, &mut vector),
+                false
+            );
         }
     }
 }

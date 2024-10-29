@@ -547,40 +547,22 @@ mod tests {
                 },
                 Err(err) => {
                     failed_count += 1;
-                    println!("failed {}", i);
                 }
             }
             if res.is_ok() {
                 inserted.insert(i);
-                println!("inserted {} {:?}", i, res);
             }
         }
-        for (i, item) in table.bucket.iter().enumerate() {
-            println!("{} : {:?}", i, &item);
-        }
-        println!("failed count for inserting is {}", failed_count);
-        let mut not_found = 0;
-        let mut failed = HashSet::new();
         for i in 13000..14500 {
             let key = Key::new(i);
             let hash = calculate_hash(&key.key);
             let meta_hash = (hash & K_MASK) as u8;
-            unsafe {
-                match table.search(&key, hash, meta_hash) {
-                    None => {
-                        failed.insert(i);
-                        not_found += 1;
-                    }
-                    Some(value) => {
-                        println!("Item found for key {} value: {:?}", i, value);
-                    }
-                }
+            if inserted.contains(&i) {
+                assert!(table.search(&key, hash, meta_hash).is_some());
+            } else {
+                assert!(table.search(&key, hash, meta_hash).is_none());
             }
         }
-        let res = inserted.intersection(&failed);
-        println!("Failed but inserted {:?}", res);
-        println!("Stash inserted {:?}", stash_inserted);
-        println!("Total search failures are {}", not_found);
     }
 
     #[test]
@@ -598,10 +580,7 @@ mod tests {
                 Ok(_) => {
                     inserted.push(i);
                 }
-                Err(err) => {
-
-                    // println!("failed {}", i);
-                }
+                Err(_) => {}
             }
         }
         for i in 0..(inserted.len() / 2) {
@@ -617,13 +596,5 @@ mod tests {
             let meta_hash = (hash & K_MASK) as u8;
             assert!(table.search(&key, hash, meta_hash).is_some());
         }
-
-        // for i in deleted {
-        //     let key = Key::new(i);
-        //     let hash = calculate_hash(&key.key);
-        //     let meta_hash = (hash & K_MASK) as u8;
-        //     assert!(table.search(&key, hash, meta_hash).is_some());
-        // }
-        // assert_eq!(failed, inserted.len() / 2);
     }
 }
