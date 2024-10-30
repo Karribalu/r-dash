@@ -58,6 +58,9 @@ impl<T: PartialEq + Debug + Clone> Table<T> {
             lock_bit: Arc::new(Mutex::new(0)),
         }
     }
+    /**
+    Acquiring the lock for a table or segment is same as acquiring locks for all the buckets inside it
+    */
     pub fn acquire_locks(&self) {
         for i in 0..K_NUM_BUCKET {
             self.bucket[i].get_lock();
