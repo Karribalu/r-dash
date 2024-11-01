@@ -3,8 +3,10 @@ mod directory;
 mod table;
 
 use crate::extendable_hashing::directory::Directory;
+use crate::extendable_hashing::table::{Table, TableError};
 use crate::hash::{Hash, ValueT};
 use crate::utils::hashing::calculate_hash;
+use crate::utils::pair::Key;
 use std::mem;
 use std::sync::atomic::AtomicI32;
 
@@ -38,10 +40,39 @@ impl<T> Hash<T> for ExtendableHashing<T> {
     fn insert(&mut self, key: T, value: ValueT) {
         let key_hash = calculate_hash(&key);
         let meta_hash = (key_hash & K_MASK) as u8;
-        'RETRY: {
+        'RETRY: loop {
             let dir = &self.dir;
             let dir_index = key_hash >> (8 * size_of::<usize>() - dir.global_depth);
-            let target_dir = &mut dir.segments[dir_index as u64 & TAIL_MASK];
+            let target_table: &mut Table<T> = &mut dir.segments[dir_index as u64 & TAIL_MASK];
+            let key = Key::new(&key);
+            // TODO: Complete the recovery part
+            let response = target_table.insert(key, value.clone(), key_hash, meta_hash);
+            match response {
+                Ok(_success_response) => {}
+                Err(err) => {
+                    match err {
+                        TableError::TableFull => {
+                            // Splitting the table
+                            target_table.acquire_locks();
+                            let dir_index = key_hash >> (8 * size_of::<usize>() - dir.global_depth);
+                            let new_table: Table<T> = dir.segments[dir_index as u64 & TAIL_MASK];
+                            // Verifying if the target table is not changed in between
+                            if calculate_hash(target_table) != calculate_hash(&new_table) {
+                                target_table.release_locks();
+                                continue 'RETRY;
+                            }
+                            let new_bucket = target_table.split();
+                        }
+                        TableError::Internal => {}
+                        TableError::ItemDoesntExist => {}
+                        TableError::UnableToAcquireLock(_) => {
+                            continue 'RETRY;
+                        }
+                        TableError::KeyExists => {}
+                        TableError::UnableToInsertKey => {}
+                    }
+                }
+            }
         }
     }
 

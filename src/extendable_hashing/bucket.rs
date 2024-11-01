@@ -575,7 +575,7 @@ mod tests {
             let value: ValueT = string.clone().into_bytes();
 
             let hash = calculate_hash(&i);
-            let key = Key::new(i);
+            let key = Key::new(&i);
             let response = bucket.insert(key, value, meta_hash(hash), true);
             match response {
                 Ok(_) => {
@@ -592,7 +592,7 @@ mod tests {
             let mut vector = vec![];
             let cloned_key = key_str.clone();
             let hash = calculate_hash(key_str);
-            let key = Key::new(*key_str);
+            let key = Key::new(key_str);
             let start = Instant::now();
             // Calculate the elapsed time
             if bucket.check_and_get(hash as u8, &key, false, &mut vector) {
@@ -604,13 +604,13 @@ mod tests {
             println!("it took so time {:?}", duration);
         }
         let hash = calculate_hash(&ans[5]);
-        let key: Key<i32> = Key::new(ans[5]);
+        let key: Key<i32> = Key::new(&ans[5]);
         let delete = bucket.delete(&key, hash as u8, false);
         match delete {
             Ok(_) => {
                 println!("found the key to delete {:?}", ans);
                 let mut vector = vec![];
-                let key = Key::new(ans[5]);
+                let key = Key::new(&ans[5]);
                 let start = Instant::now();
                 // Calculate the elapsed time
 
@@ -626,7 +626,7 @@ mod tests {
                 println!("{:?}", err);
             }
         }
-        let key: Key<i32> = Key::new(ans[5]);
+        let key: Key<i32> = Key::new(&ans[5]);
         let delete = bucket.delete(&key, meta_hash(hash), false);
         match delete {
             Ok(_) => {
@@ -648,7 +648,7 @@ mod tests {
             let value: ValueT = string.clone().into_bytes();
 
             let hash = calculate_hash(&key);
-            let key = Key::new(key);
+            let key = Key::new(&key);
             let response = bucket.insert(key, value, meta_hash(hash), false);
             match response {
                 Ok(slot) => {
@@ -668,7 +668,7 @@ mod tests {
             let mut vector = vec![];
             let cloned_key = key_str.clone();
             let hash = calculate_hash(&key_str);
-            let key = Key::new(key_str.clone());
+            let key = Key::new(key_str);
             let start = Instant::now();
             // Calculate the elapsed time
             if idx == ans.len() - 1 {
@@ -698,7 +698,7 @@ mod tests {
             let value: ValueT = string.clone().into_bytes();
 
             let hash = calculate_hash(&key);
-            let key = Key::new(key);
+            let key = Key::new(&key);
             let response = bucket.insert(key, value, meta_hash(hash), false);
             match response {
                 Ok(slot) => {
@@ -713,7 +713,7 @@ mod tests {
         for key in ans {
             let mut vector = vec![];
             let hash = calculate_hash(&key);
-            let key = Key::new(key);
+            let key = Key::new(&key);
             assert_eq!(
                 bucket.check_and_get(meta_hash(hash), &key, false, &mut vector),
                 true

@@ -1,15 +1,15 @@
 use crate::hash::ValueT;
 #[derive(Debug, Clone, PartialEq)]
-pub struct Key<T: PartialEq> {
+pub struct Key<T: PartialEq + Clone> {
     pub key: T,
     pub is_pointer: bool,
     pub length: u32,
     pub pointed_key: Vec<u8>,
 }
-impl<T: PartialEq> Key<T> {
-    pub fn new(key: T) -> Self {
+impl<T: PartialEq + Clone> Key<T> {
+    pub fn new(key: &T) -> Self {
         Key {
-            key,
+            key: key.clone(),
             is_pointer: false,
             length: 0,
             pointed_key: vec![],

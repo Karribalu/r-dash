@@ -5,10 +5,11 @@ use crate::extendable_hashing::{BUCKET_MASK, K_FINGER_BITS, K_NUM_BUCKET, K_STAS
 use crate::hash::ValueT;
 use crate::utils::pair::{Key, Pair};
 use std::fmt::Debug;
+use std::hash::{Hash, Hasher};
 use std::sync::{Arc, Mutex};
 use thiserror::Error;
 
-#[derive(Debug)]
+#[derive(Debug, Hash)]
 enum TableState {
     Merging,
     Splitting,
@@ -42,7 +43,15 @@ pub struct Table<T: PartialEq + Debug + Clone> {
     state: Arc<TableState>,
     lock_bit: Arc<Mutex<u32>>, /* for the synchronization of the lazy recovery in one segment*/
 }
-
+impl<T> Hash for Table<T> {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.bucket.hash(state);
+        self.local_depth.hash(state);
+        self.pattern.hash(state);
+        self.number.hash(state);
+        self.state.hash(state);
+    }
+}
 impl<T: PartialEq + Debug + Clone> Table<T> {
     pub fn new(pattern: usize) -> Self {
         let mut buckets = vec![];
@@ -192,7 +201,7 @@ impl<T: PartialEq + Debug + Clone> Table<T> {
                 if stash_insert_res {
                     Ok(4)
                 } else {
-                    Err(TableError::UnableToInsertKey)
+                    Err(TableError::TableFull)
                 }
             } else {
                 // Insert in the bucket which has lesser keys
@@ -389,6 +398,19 @@ impl<T: PartialEq + Debug + Clone> Table<T> {
         }
         Err(BucketError::KeyDoesNotExist)
     }
+    /**
+        This assumes the locks for all the buckets of this segment are acquired
+    */
+    pub fn split(&mut self, key_hash: usize) {
+        let new_pattern = (self.pattern << 1) + 1;
+        let old_pattern = self.pattern << 1;
+        self.state = Arc::from(TableState::Splitting);
+        let mut next_table: Table<T> = Table::new(new_pattern);
+        next_table.local_depth = self.local_depth + 1;
+        next_table.state = Arc::from(TableState::Splitting);
+        // Getting the lock of the first bucket to make sure the new table does not get split in between
+        next_table.bucket[0].get_lock();
+    }
 }
 pub fn bucket_index(hash: usize, finger_bits: usize, bucket_mask: usize) -> usize {
     // We do the finger_bits right shift because we use that last 8 bits for finger-print.
@@ -439,7 +461,7 @@ mod tests {
     #[test]
     pub fn test_insert_basic() {
         let mut table = Table::<i32>::new(0);
-        let key = Key::new(10);
+        let key = Key::new(&10);
         let value = String::from("Hello World");
         let hash = calculate_hash(&key.key);
         unsafe {
@@ -460,7 +482,7 @@ mod tests {
         let mut failed_count = 0;
         let start_time = SystemTime::now();
         for i in 13000..14500 {
-            let key = Key::new(i);
+            let key = Key::new(&i);
             let hash = calculate_hash(&key.key);
             let meta_hash = (hash & K_MASK) as u8;
             let value = value.clone();
@@ -528,7 +550,7 @@ mod tests {
         let mut inserted = HashSet::new();
         let mut stash_inserted = HashSet::new();
         for i in 13000..14500 {
-            let key = Key::new(i);
+            let key = Key::new(&i);
             let hash = calculate_hash(&key.key);
             let meta_hash = (hash & K_MASK) as u8;
             let value = value.clone();
@@ -557,7 +579,7 @@ mod tests {
             }
         }
         for i in 13000..14500 {
-            let key = Key::new(i);
+            let key = Key::new(&i);
             let hash = calculate_hash(&key.key);
             let meta_hash = (hash & K_MASK) as u8;
             if inserted.contains(&i) {
@@ -574,7 +596,7 @@ mod tests {
         let value = String::from("Hello World");
         let mut inserted = Vec::new();
         for i in 13000..14500 {
-            let key = Key::new(i);
+            let key = Key::new(&i);
             let hash = calculate_hash(&key.key);
             let meta_hash = (hash & K_MASK) as u8;
             let value = value.clone();
@@ -587,14 +609,14 @@ mod tests {
             }
         }
         for i in 0..(inserted.len() / 2) {
-            let key = Key::new(inserted[i]);
+            let key = Key::new(&inserted[i]);
             let hash = calculate_hash(&key.key);
             let meta_hash = (hash & K_MASK) as u8;
             assert!(table.delete(&key, hash, meta_hash).is_ok());
             assert!(table.search(&key, hash, meta_hash).is_none());
         }
         for i in (inserted.len() / 2)..inserted.len() {
-            let key = Key::new(inserted[i]);
+            let key = Key::new(&inserted[i]);
             let hash = calculate_hash(&key.key);
             let meta_hash = (hash & K_MASK) as u8;
             assert!(table.search(&key, hash, meta_hash).is_some());
