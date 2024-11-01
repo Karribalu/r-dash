@@ -44,7 +44,7 @@ pub struct Table<T: PartialEq + Debug + Clone> {
 }
 
 impl<T: PartialEq + Debug + Clone> Table<T> {
-    pub fn new() -> Self {
+    pub fn new(pattern: usize) -> Self {
         let mut buckets = vec![];
         for _i in 0..(K_NUM_BUCKET + K_STASH_BUCKET) {
             buckets.push(Bucket::new());
@@ -52,7 +52,7 @@ impl<T: PartialEq + Debug + Clone> Table<T> {
         Table {
             bucket: buckets,
             local_depth: 0,
-            pattern: 0,
+            pattern,
             number: 0,
             state: Arc::from(TableState::Normal),
             lock_bit: Arc::new(Mutex::new(0)),
@@ -410,7 +410,7 @@ mod tests {
 
     #[test]
     pub fn test_new_table() {
-        let table = Table::<i32>::new();
+        let table = Table::<i32>::new(0);
         assert_eq!(table.bucket.len(), K_NUM_BUCKET + K_STASH_BUCKET);
         assert_eq!(table.local_depth, 0);
         assert_eq!(table.pattern, 0);
@@ -418,7 +418,7 @@ mod tests {
     }
     #[test]
     pub fn test_acquire_locks() {
-        let mut table = Table::<i32>::new();
+        let mut table = Table::<i32>::new(0);
         table.acquire_locks();
         assert_eq!(
             table.bucket[0..K_NUM_BUCKET]
@@ -438,7 +438,7 @@ mod tests {
     }
     #[test]
     pub fn test_insert_basic() {
-        let mut table = Table::<i32>::new();
+        let mut table = Table::<i32>::new(0);
         let key = Key::new(10);
         let value = String::from("Hello World");
         let hash = calculate_hash(&key.key);
@@ -450,7 +450,7 @@ mod tests {
 
     #[test]
     pub fn test_insert_for_all_buckets() {
-        let mut table = Table::<i32>::new();
+        let mut table = Table::<i32>::new(0);
         let value = String::from("Hello World");
         let mut target_bucket = 0;
         let mut neighbor_bucket = 0;
@@ -464,7 +464,7 @@ mod tests {
             let hash = calculate_hash(&key.key);
             let meta_hash = (hash & K_MASK) as u8;
             let value = value.clone();
-            let bucket_index = bucket_index(hash, K_FINGER_BITS, BUCKET_MASK);
+            // let bucket_index = bucket_index(hash, K_FINGER_BITS, BUCKET_MASK);
             // let str = format!(
             //     "{:?} inserted in {} with meta_hash {}",
             //     key, bucket_index, meta_hash);
@@ -517,7 +517,7 @@ mod tests {
 
     #[test]
     pub fn test_search_for_all_buckets() {
-        let mut table = Table::<i32>::new();
+        let mut table = Table::<i32>::new(0);
         let value = String::from("Hello World");
         let mut target_bucket = 0;
         let mut neighbor_bucket = 0;
@@ -570,7 +570,7 @@ mod tests {
 
     #[test]
     pub fn test_delete_for_all_buckets() {
-        let mut table = Table::<i32>::new();
+        let mut table = Table::<i32>::new(0);
         let value = String::from("Hello World");
         let mut inserted = Vec::new();
         for i in 13000..14500 {

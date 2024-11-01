@@ -3,8 +3,11 @@ mod directory;
 mod table;
 
 use crate::extendable_hashing::directory::Directory;
-use crate::hash::Hash;
+use crate::hash::{Hash, ValueT};
+use crate::utils::hashing::calculate_hash;
+use std::mem;
 use std::sync::atomic::AtomicI32;
+
 pub const K_NUM_BUCKET: usize = 64;
 pub const K_STASH_BUCKET: usize = 2;
 pub const K_FINGER_BITS: usize = 8;
@@ -15,33 +18,44 @@ pub const BUCKET_MASK: usize = (1 << K_NUM_BUCKET.ilog2()) - 1;
 pub const STASH_MASK: usize = (1 << K_STASH_BUCKET.ilog2()) - 1;
 pub const TAIL_MASK: u64 = (1 << 56) - 1;
 pub const HEADER_MASK: u64 = ((1 << 8) - 1) << 56;
-// pub struct ExtendableHashing<T> {
-//     clean: bool,
-//     crash_version: u64,
-//     lock: AtomicI32, // the MSB is the lock bit; remaining bits are used as the counter
-//     // dir: Directory // Yet to be implemented
-//
-// }
-// impl<T> Hash<T> for ExtendableHashing<T> {
-//     fn new() {
-//         todo!()
-//     }
-//
-//     fn insert(key: T, value: Box<[u8]>) {
-//         todo!()
-//     }
-//
-//     fn delete(key: T) {
-//         todo!()
-//     }
-//
-//     fn get(key: T, buff: &mut [u8]) {
-//         todo!()
-//     }
-// }
-// impl<T> ExtendableHashing<T>{
-//     fn shut_down(&mut self){
-//         self.clean = true;
-//         // Persist after that
-//     }
-// }
+const DEFAULT_CAPACITY: usize = 10;
+pub struct ExtendableHashing<T> {
+    clean: bool,
+    crash_version: u64,
+    lock_and_counter: AtomicI32, // the MSB is the lock bit; remaining bits are used as the counter
+    dir: Directory<T>,           // Yet to be implemented
+}
+impl<T> Hash<T> for ExtendableHashing<T> {
+    fn new() -> Self {
+        Self {
+            clean: true,
+            crash_version: 0,
+            lock_and_counter: Default::default(),
+            dir: Directory::new(DEFAULT_CAPACITY, 0),
+        }
+    }
+
+    fn insert(&mut self, key: T, value: ValueT) {
+        let key_hash = calculate_hash(&key);
+        let meta_hash = (key_hash & K_MASK) as u8;
+        'RETRY: {
+            let dir = &self.dir;
+            let dir_index = key_hash >> (8 * size_of::<usize>() - dir.global_depth);
+            let target_dir = &mut dir.segments[dir_index as u64 & TAIL_MASK];
+        }
+    }
+
+    fn delete(key: T) {
+        todo!()
+    }
+
+    fn get(key: T, buff: &mut [u8]) {
+        todo!()
+    }
+}
+impl<T> ExtendableHashing<T> {
+    fn shut_down(&mut self) {
+        self.clean = true;
+        // Persist after that
+    }
+}
