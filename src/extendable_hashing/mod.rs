@@ -7,7 +7,6 @@ use crate::extendable_hashing::table::{Table, TableError};
 use crate::hash::{Hash, ValueT};
 use crate::utils::hashing::calculate_hash;
 use crate::utils::pair::Key;
-use std::mem;
 use std::sync::atomic::AtomicI32;
 
 pub const K_NUM_BUCKET: usize = 64;
@@ -88,5 +87,30 @@ impl<T> ExtendableHashing<T> {
     fn shut_down(&mut self) {
         self.clean = true;
         // Persist after that
+    }
+    /**
+        This function assumes that the entire directory is locked before calling it
+    */
+    fn directory_doubling(
+        &mut self,
+        new_table_index: usize,
+        new_bucket: &mut Table<T>,
+        // old_bucket: &mut Table<T>,
+    ) {
+        let old_ds = &mut self.dir.segments;
+        let global_depth = &self.dir.global_depth;
+        println!("Directory is doubling to global depth {}", global_depth + 1);
+        let current_capacity = 2.pow(global_depth);
+        let mut new_d: Directory<T> = Directory::new(2 * current_capacity, self.dir.version + 1);
+        let new_ds = &mut new_d.segments;
+        for i in 0..current_capacity {
+            new_ds[2 * i] = old_ds[i].clone();
+            new_ds[2 * i + 1] = old_ds[i].clone();
+        }
+        // Replacing the old duplicate table with  new table
+        new_ds[2 * new_table_index + 1] = new_bucket;
+        new_d.depth_count += 1;
+
+        self.dir = new_d;
     }
 }
