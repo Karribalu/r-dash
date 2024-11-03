@@ -136,6 +136,7 @@ impl<T: Debug + Clone + PartialEq> Bucket<T> {
     /**
     This function is used to look for open slots in stash_buckets of the target bucket
     If there is an available slot then uses it or else it does the exact search in the probing (neighbor) bucket
+    If there are no free slots in stash allotted slots i.e. 4 to add the reference in the target or probing bucket then increased the overflow count.
     */
     pub fn set_indicator(&mut self, meta_hash: u8, neighbor: &mut Bucket<T>, pos: u8) {
         let mut mask: u8 = self.overflow_bitmap & OVERFLOW_BITMAP_MASK;
@@ -170,7 +171,7 @@ impl<T: Debug + Clone + PartialEq> Bucket<T> {
         &mut self,
         meta_hash: u8,
         neighbor: &mut Bucket<T>,
-        key: Key<T>,
+        // key: Key<T>,
         pos: u64,
     ) {
         // TODO: Verify it it is u64 or u8
@@ -508,13 +509,19 @@ pub fn stash_insert<T: Debug + Clone + PartialEq>(
     let mut index = 0;
     for stash_bucket in stash_buckets {
         if get_count(stash_bucket.bitmap) < K_NUM_PAIR_PER_BUCKET {
+            stash_bucket.get_lock();
             return match stash_bucket.insert(key, value, meta_hash, false) {
                 Ok(_) => {
                     target.set_indicator(meta_hash, neighbor, index);
+                    stash_bucket.release_lock();
                     true
                 }
                 Err(e) => {
-                    println!("Some error occurred while inserting element to stash buckets");
+                    stash_bucket.release_lock();
+                    println!(
+                        "Some error occurred while inserting element to stash buckets {:?}",
+                        e
+                    );
                     false
                 }
             };

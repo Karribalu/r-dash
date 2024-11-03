@@ -60,7 +60,7 @@ impl<T> Hash<T> for ExtendableHashing<T> {
                                 target_table.release_locks();
                                 continue 'RETRY;
                             }
-                            let new_bucket = target_table.split();
+                            let new_bucket = target_table.split(key_hash);
                         }
                         TableError::Internal => {}
                         TableError::ItemDoesntExist => {}

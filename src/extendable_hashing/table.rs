@@ -1,8 +1,9 @@
 use crate::extendable_hashing::bucket::{
-    get_count, stash_insert, Bucket, BucketError, K_NUM_PAIR_PER_BUCKET,
+    check_bit_32, get_bitmap, get_count, stash_insert, Bucket, BucketError, K_NUM_PAIR_PER_BUCKET,
 };
 use crate::extendable_hashing::{BUCKET_MASK, K_FINGER_BITS, K_NUM_BUCKET, K_STASH_BUCKET};
 use crate::hash::ValueT;
+use crate::utils::hashing::calculate_hash;
 use crate::utils::pair::{Key, Pair};
 use std::fmt::Debug;
 use std::hash::{Hash, Hasher};
@@ -30,6 +31,11 @@ pub enum TableError {
     KeyExists,
     #[error("Unable to insert key in any of the buckets")]
     UnableToInsertKey,
+}
+
+pub enum SplitError {
+    #[error("Something wrong occurred")]
+    InternalError(String),
 }
 // Segment
 #[derive(Debug)]
@@ -241,6 +247,120 @@ impl<T: PartialEq + Debug + Clone> Table<T> {
         }
     }
     /**
+    This insert function is very similar to the traditional insert function.
+    The only difference is we are trying to shift the values from a split bucket to its neighbor
+     */
+    pub fn insert_4_split(
+        &mut self,
+        key: &Key<T>,
+        value: &ValueT,
+        key_hash: usize,
+        meta_hash: u8,
+    ) -> Result<i32, TableError> {
+        let bucket_index = bucket_index(key_hash, K_FINGER_BITS, BUCKET_MASK);
+        let buckets_ptr = self.bucket.as_mut_ptr();
+        unsafe {
+            let target = &mut *buckets_ptr.add(bucket_index);
+
+            let neighbor = &mut *buckets_ptr.add((bucket_index + 1) & BUCKET_MASK);
+            let insert_bucket;
+            let mut probe = false;
+            if get_count(target.bitmap) <= get_count(neighbor.bitmap) {
+                insert_bucket = target;
+            } else {
+                probe = true;
+                insert_bucket = neighbor;
+            }
+            insert_bucket.get_lock();
+            if get_count(insert_bucket.bitmap) < K_NUM_PAIR_PER_BUCKET {
+                // Case where we can store the new element
+                match insert_bucket.insert(key.clone(), value.clone(), meta_hash, probe) {
+                    Ok(_) => {
+                        insert_bucket.release_lock();
+                        Ok(1)
+                    }
+                    Err(_) => {
+                        println!("Error occurred while inserting a new element inside insert4split function");
+                        Err(TableError::Internal)
+                    }
+                }
+            } else {
+                // Case where the target and neighbors are filled
+                let next_neighbor = &mut *buckets_ptr.add((bucket_index + 2) & BUCKET_MASK);
+                if !next_neighbor.try_get_lock() {
+                    insert_bucket.release_lock();
+                    return Err(TableError::UnableToAcquireLock(
+                        "Unable to acquire the lock for next neighbor".to_string(),
+                    ));
+                }
+                let displacement_res = Self::next_displace(
+                    insert_bucket,
+                    next_neighbor,
+                    key.clone(),
+                    value.clone(),
+                    meta_hash,
+                );
+                next_neighbor.release_lock();
+                if displacement_res {
+                    // inserted in the neighboring bucket by displacement
+                    insert_bucket.release_lock();
+                    return Ok(2);
+                }
+                // Now we check for previous neighbor
+                let prev_index = if bucket_index == 0 {
+                    K_NUM_BUCKET - 1
+                } else {
+                    bucket_index - 1
+                };
+                let prev_neighbor = &mut *buckets_ptr.add(prev_index);
+                if !prev_neighbor.try_get_lock() {
+                    insert_bucket.release_lock();
+                    return Err(TableError::UnableToAcquireLock(
+                        "Unable to acquire the lock for previous neighbor".to_string(),
+                    ));
+                }
+
+                let displacement_res = Self::prev_displace(
+                    target,
+                    prev_neighbor,
+                    key.clone(),
+                    value.clone(),
+                    meta_hash,
+                );
+
+                prev_neighbor.release_lock();
+                if displacement_res {
+                    // inserted in the prev neighboring bucket by displacement
+                    insert_bucket.release_lock();
+                    return Ok(3);
+                }
+                // Trying to insert in stash_bucket
+
+                let mut stash_buckets: Vec<&mut Bucket<T>> = vec![];
+                for i in 0..K_STASH_BUCKET {
+                    stash_buckets.push(&mut *buckets_ptr.add(K_NUM_BUCKET + i));
+                }
+                target.get_lock();
+                neighbor.get_lock();
+                let stash_insert_res = stash_insert(
+                    stash_buckets,
+                    target,
+                    neighbor,
+                    key.clone(),
+                    value.clone(),
+                    meta_hash,
+                );
+                target.release_lock();
+                neighbor.release_lock();
+                if stash_insert_res {
+                    Ok(4)
+                } else {
+                    Err(TableError::TableFull)
+                }
+            }
+        }
+    }
+    /**
     Takes a reference Bucket, and it's neighbor, Moves one eligible pair to it's neighbor bucket.
     Adds the new Pair to the reference bucket.
     Returns boolean True - Success, False - Failure
@@ -399,17 +519,134 @@ impl<T: PartialEq + Debug + Clone> Table<T> {
         Err(BucketError::KeyDoesNotExist)
     }
     /**
-        This assumes the locks for all the buckets of this segment are acquired
+    This assumes the locks for all the buckets of this table are acquired
+    1. Increments the pattern for auditing the change
+    2. Creates a new table to divide the existing table to 2 parts.
+    3. Rehash each entry in all the buckets to find the new positions in new table
+    4.
     */
-    pub fn split(&mut self, key_hash: usize) {
+    pub fn split(&mut self, origin_key_hash: usize) -> Result<Table<T>, SplitError> {
         let new_pattern = (self.pattern << 1) + 1;
         let old_pattern = self.pattern << 1;
         self.state = Arc::from(TableState::Splitting);
         let mut next_table: Table<T> = Table::new(new_pattern);
         next_table.local_depth = self.local_depth + 1;
         next_table.state = Arc::from(TableState::Splitting);
+
         // Getting the lock of the first bucket to make sure the new table does not get split in between
         next_table.bucket[0].get_lock();
+
+        let key_hash;
+        let mut invalid_buckets: Vec<u32> = vec![];
+        for i in 0..K_NUM_BUCKET {
+            let current_bucket = &mut self.bucket[i];
+            let mask = get_bitmap(current_bucket.bitmap);
+            let mut invalid_mask = 0;
+            for j in 0..K_NUM_PAIR_PER_BUCKET {
+                if check_bit_32(mask, j) {
+                    let current_pair: Pair<T> = current_bucket.pairs[j].unwrap();
+                    if current_pair.key.is_pointer {
+                        key_hash = calculate_hash(&current_pair.key);
+                    } else {
+                        key_hash = calculate_hash(&current_pair.key.key);
+                    }
+                    // FIXME: Verify if this is working as needed
+                    if (key_hash >> (8 * size_of::<usize>() - self.local_depth - 1)) == new_pattern
+                    {
+                        invalid_mask = invalid_mask | (1 << j);
+                        match next_table.insert_4_split(
+                            &current_pair.key,
+                            &current_pair.value,
+                            key_hash,
+                            current_bucket.finger_array[j],
+                        ) {
+                            Ok(_) => {}
+                            Err(_) => {
+                                println!(
+                                    "Some error occurred while splitting {:?} in pair {:?}",
+                                    current_bucket, current_pair.value
+                                );
+                                return Err(SplitError::InternalError(format!(
+                                    "Some error occurred while splitting {:?} in pair {:?}",
+                                    current_bucket, current_pair.value
+                                )));
+                            }
+                        }
+                    }
+                }
+            }
+            invalid_buckets.append(invalid_mask);
+        }
+
+        // Splitting the values stored in Stash Buckets
+        for i in K_NUM_BUCKET..K_NUM_BUCKET + K_STASH_BUCKET {
+            let curr_stash_bucket = &mut self.bucket[i];
+            let mask = get_bitmap(curr_stash_bucket);
+            let mut invalid_mask = 0;
+            for j in 0..K_NUM_PAIR_PER_BUCKET {
+                if check_bit_32(mask, j) {
+                    let current_pair: Pair<T> = curr_stash_bucket.pairs[j].unwrap();
+                    if current_pair.key.is_pointer {
+                        key_hash = calculate_hash(&current_pair.key);
+                    } else {
+                        key_hash = calculate_hash(&current_pair.key.key);
+                    }
+                    // FIXME: Verify if this is working as needed
+                    if (key_hash >> (8 * size_of::<usize>() - self.local_depth - 1)) == new_pattern
+                    {
+                        invalid_mask = invalid_mask | (1 << j);
+                        match next_table.insert_4_split(
+                            &current_pair.key,
+                            &current_pair.value,
+                            key_hash,
+                            curr_stash_bucket.finger_array[j],
+                        ) {
+                            Ok(_) => {
+                                let bucket_ix = bucket_index(key_hash, K_FINGER_BITS, BUCKET_MASK);
+                                let buckets_ptr = self.bucket.as_mut_ptr();
+                                unsafe {
+                                    let target = &mut *buckets_ptr.add(bucket_ix);
+                                    let neighbor =
+                                        &mut *buckets_ptr.add((bucket_ix + 1) & BUCKET_MASK);
+                                    target.get_lock();
+                                    neighbor.get_lock();
+                                    target.unset_indicator(
+                                        curr_stash_bucket.finger_array[j],
+                                        neighbor,
+                                        i,
+                                    );
+                                    target.release_lock();
+                                    neighbor.release_lock();
+                                }
+                            }
+                            Err(_) => {
+                                println!(
+                                    "Some error occurred while splitting {:?} in pair {:?}",
+                                    curr_stash_bucket, current_pair.value
+                                );
+                                return Err(SplitError::InternalError(format!(
+                                    "Some error occurred while splitting {:?} in pair {:?}",
+                                    curr_stash_bucket, current_pair.value
+                                )));
+                            }
+                        }
+                    }
+                }
+            }
+            invalid_buckets.append(invalid_mask);
+        }
+        // Invalidating the entries in target
+        for i in 0..K_NUM_BUCKET + K_STASH_BUCKET {
+            let current_bucket = &mut self.bucket[i];
+            current_bucket.get_lock();
+            current_bucket.bitmap = current_bucket.bitmap
+                & (!(invalid_buckets[i] << 18))
+                & (!(invalid_buckets[i] << 4));
+            current_bucket.bitmap -= invalid_buckets[i].count_ones();
+            current_bucket.release_lock();
+        }
+        next_table.pattern = new_pattern;
+        Ok(next_table)
     }
 }
 pub fn bucket_index(hash: usize, finger_bits: usize, bucket_mask: usize) -> usize {
@@ -419,10 +656,8 @@ pub fn bucket_index(hash: usize, finger_bits: usize, bucket_mask: usize) -> usiz
 
 mod tests {
     use crate::extendable_hashing::bucket::meta_hash;
-    use crate::extendable_hashing::table::{bucket_index, Table};
-    use crate::extendable_hashing::{
-        BUCKET_MASK, K_FINGER_BITS, K_MASK, K_NUM_BUCKET, K_STASH_BUCKET,
-    };
+    use crate::extendable_hashing::table::Table;
+    use crate::extendable_hashing::{K_MASK, K_NUM_BUCKET, K_STASH_BUCKET};
     use crate::utils::hashing::calculate_hash;
     use crate::utils::pair::Key;
     use std::collections::HashSet;
