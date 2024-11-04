@@ -52,7 +52,7 @@ impl<T> Hash<T> for ExtendableHashing<T> {
                     match err {
                         TableError::TableFull => {
                             // Splitting the table
-                            target_table.acquire_locks();
+
                             let dir_index = key_hash >> (8 * size_of::<usize>() - dir.global_depth);
                             let new_table: Table<T> = dir.segments[dir_index as u64 & TAIL_MASK];
                             // Verifying if the target table is not changed in between
@@ -60,7 +60,15 @@ impl<T> Hash<T> for ExtendableHashing<T> {
                                 target_table.release_locks();
                                 continue 'RETRY;
                             }
-                            let new_bucket = target_table.split(key_hash);
+                            target_table.acquire_locks();
+                            let new_bucket = target_table.split(key_hash).unwrap();
+                            target_table.release_locks();
+                            'REINSERT: {
+                                let new_table: Table<T> = dir.segments[dir_index as u64 & TAIL_MASK];
+                                if calculate_hash(target_table) != calculate_hash(&new_table) {
+                                    continue 'RETRY;
+                                }
+                            }
                         }
                         TableError::Internal => {}
                         TableError::ItemDoesntExist => {}

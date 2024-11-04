@@ -32,7 +32,7 @@ pub enum TableError {
     #[error("Unable to insert key in any of the buckets")]
     UnableToInsertKey,
 }
-
+#[derive(Debug, Error)]
 pub enum SplitError {
     #[error("Something wrong occurred")]
     InternalError(String),
@@ -83,7 +83,7 @@ impl<T: PartialEq + Debug + Clone> Table<T> {
     }
     pub fn release_locks(&self) {
         for i in 0..K_NUM_BUCKET {
-            self.bucket[i].reset_lock();
+            self.bucket[i].release_lock();
         }
     }
     pub fn insert(

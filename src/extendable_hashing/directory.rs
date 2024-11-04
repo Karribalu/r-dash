@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use std::fmt::Debug;
 
 pub struct Directory<T: PartialEq + Debug + Clone> {
-    pub segments: Vec<Table<T>>, // Yet to be created
+    pub segments: Vec<Table<T>>,
     pub global_depth: usize,
     pub version: usize,
     pub depth_count: usize,
